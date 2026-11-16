@@ -1,0 +1,54 @@
+name: Mobile prototype
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: android }
+          - { os: macos-26, target: ios }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Flutter 3.47.9
+        run: |
+          git clone --quiet --branch 3.47.9 --depth 1 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - run: flutter pub get --enforce-lockfile
+      - if: matrix.target == 'android'
+        run: |
+          flutter analyze --no-pub
+          flutter test --no-pub
+          flutter build apk --debug --no-pub
+      - if: matrix.target == 'ios'
+        name: Build unsigned iPhone app
+        run: |
+          flutter build ios --release --no-codesign --no-pub
+          mkdir -p build/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
+          cd build/ipa
+          ditto -c -k --keepParent Payload Innerwave-Studio-unsigned.ipa
+      - if: matrix.target == 'ios'
+        name: Exercise the native stereo importer on an iPhone simulator
+        run: |
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(x["udid"] for k,v in json.load(sys.stdin)["devices"].items() if ".iOS-" in k for x in v if x["name"].startswith("iPhone")))')
+          xcrun simctl bootstatus "$device" -b
+          xcodebuild -quiet test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innerwave-Studio-${{ matrix.target }}
+          path: |
+            build/app/outputs/flutter-apk/app-debug.apk
+            build/ipa/Innerwave-Studio-unsigned.ipa
+          if-no-files-found: error

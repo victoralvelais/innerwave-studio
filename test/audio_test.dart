@@ -10,7 +10,8 @@ void main() {
   setUp(() => dir = Directory.systemTemp.createTempSync('innerwave-audio-'));
   tearDown(() => dir.deleteSync(recursive: true));
 
-  Clip writeClip(String name, List<int> Function(int) sample, {int frames = 16000}) {
+  Clip writeClip(String name, List<int> Function(int) sample,
+      {int frames = 16000}) {
     final data = ByteData(frames * frameBytes);
     for (var i = 0; i < frames; i++) {
       final pair = sample(i);
@@ -20,8 +21,15 @@ void main() {
     }
     final path = '${dir.path}/$name.pcm';
     File(path).writeAsBytesSync(data.buffer.asUint8List());
-    return Clip(id: name, name: name, source: '$name.pcm', type: LayerType.voice,
-      frames: frames, length: frames, peaks: readPeaks(path, frames), gain: 0);
+    return Clip(
+        id: name,
+        name: name,
+        source: '$name.pcm',
+        type: LayerType.voice,
+        frames: frames,
+        length: frames,
+        peaks: readPeaks(path, frames),
+        gain: 0);
   }
 
   ByteData mix(List<Clip> clips) {
@@ -29,12 +37,19 @@ void main() {
     renderMix(dir.path, Mix('test', 'Test mix', clips), path);
     return ByteData.sublistView(File(path).readAsBytesSync());
   }
-  int value(ByteData wav, int frame, int channel) => wav.getInt16(44 + frame * 4 + channel * 2, Endian.little);
 
-  test('render places, trims and mixes stereo data across block boundaries', () {
+  int value(ByteData wav, int frame, int channel) =>
+      wav.getInt16(44 + frame * 4 + channel * 2, Endian.little);
+
+  test('render places, trims and mixes stereo data across block boundaries',
+      () {
     final first = writeClip('first', (i) => [i < 2000 ? 0 : 4096, 0])
-      ..trim = 2000 ..length = 12000 ..start = 1000;
-    final second = writeClip('second', (_) => [0, -4096])..start = 6500 ..length = 6500;
+      ..trim = 2000
+      ..length = 12000
+      ..start = 1000;
+    final second = writeClip('second', (_) => [0, -4096])
+      ..start = 6500
+      ..length = 6500;
     final data = mix([first, second]);
     expect(data.lengthInBytes, 44 + 13000 * 4);
     expect(data.getUint32(24, Endian.little), sampleRate);
@@ -54,13 +69,19 @@ void main() {
     expect(value(changed, 9000, 1), closeTo(-2053, 2));
   });
 
-  test('voice warmth boosts low-frequency content independently on each channel', () {
-    final c = writeClip('voice', (i) => [(2000 * math.sin(2 * math.pi * 80 * i / sampleRate)).round(), 0]);
+  test(
+      'voice warmth boosts low-frequency content independently on each channel',
+      () {
+    final c = writeClip(
+        'voice',
+        (i) =>
+            [(2000 * math.sin(2 * math.pi * 80 * i / sampleRate)).round(), 0]);
     final dry = mix([c]);
     c.warmth = 8;
     final wet = mix([c]);
-    double energy(ByteData d, int ch) => List.generate(4000, (i) => value(d, i + 1000, ch))
-      .fold(0.0, (sum, n) => sum + n * n);
+    double energy(ByteData d, int ch) =>
+        List.generate(4000, (i) => value(d, i + 1000, ch))
+            .fold(0.0, (sum, n) => sum + n * n);
     expect(energy(wet, 0), greaterThan(energy(dry, 0) * 3));
     expect(energy(wet, 1), 0);
   });
@@ -68,8 +89,15 @@ void main() {
   test('starter WAV retains the specified carrier in each ear', () {
     final path = '${dir.path}/beat.pcm';
     generateStarter(path, LayerType.beat, sampleRate * 2);
-    final c = Clip(id: 'tone', name: 'Tone', source: 'beat.pcm', type: LayerType.beat,
-      frames: sampleRate * 2, length: sampleRate * 2, peaks: readPeaks(path, sampleRate * 2), gain: 0);
+    final c = Clip(
+        id: 'tone',
+        name: 'Tone',
+        source: 'beat.pcm',
+        type: LayerType.beat,
+        frames: sampleRate * 2,
+        length: sampleRate * 2,
+        peaks: readPeaks(path, sampleRate * 2),
+        gain: 0);
     final data = mix([c]);
     int cycles(int ch) {
       var n = 0;
@@ -78,8 +106,14 @@ void main() {
       }
       return n;
     }
+
     expect(cycles(0), 180);
     expect(cycles(1), 186);
-    expect(Mix.fromJson(Mix('test', 'Test mix', [c]).toJson()).clips.single.toJson(), c.toJson());
+    expect(
+        Mix.fromJson(Mix('test', 'Test mix', [c]).toJson())
+            .clips
+            .single
+            .toJson(),
+        c.toJson());
   });
 }

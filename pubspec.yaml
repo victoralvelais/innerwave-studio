@@ -13,11 +13,17 @@ dependencies:
   file_picker: 10.3.10
   just_audio: 0.10.5
   path_provider: 2.1.5
+  # Keep the platform-plugin implementations while the native-assets compiler
+  # cannot quote this Windows workspace's SDK path during flutter test.
+  path_provider_android: 2.2.23
+  path_provider_foundation: 2.5.1
   record: 6.1.2
   share_plus: 11.1.0
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
 
 flutter:

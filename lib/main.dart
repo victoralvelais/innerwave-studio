@@ -118,7 +118,7 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused) _suspend();
+    if (state == AppLifecycleState.paused && busy == null) _suspend();
   }
 
   void _suspend() {
@@ -162,7 +162,8 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
     } finally {
       if (mounted) {
         setState(() => busy = null);
-        if (suspendAfterWork) {
+        if (suspendAfterWork ||
+            WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
           suspendAfterWork = false;
           _suspend();
         }

@@ -284,6 +284,9 @@ class Studio {
               encoder: AudioEncoder.wav,
               sampleRate: sampleRate,
               numChannels: 1,
+              // audio_session owns focus so the recorder and backing player
+              // do not interrupt each other on Android.
+              audioInterruption: AudioInterruptionMode.none,
               autoGain: false,
               echoCancel: false,
               noiseSuppress: false),

@@ -45,10 +45,27 @@ jobs:
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(x["udid"] for k,v in json.load(sys.stdin)["devices"].items() if ".iOS-" in k for x in v if x["name"].startswith("iPhone")))')
           xcrun simctl bootstatus "$device" -b
           xcodebuild -quiet test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+          xcrun simctl privacy "$device" grant microphone studio.innerwave.innerwaveStudio
+          flutter test --no-pub integration_test/overdub_test.dart -d "$device"
+      - if: matrix.target == 'android'
+        name: Exercise playback and overdubbing on an Android emulator
+        run: |
+          sudo chmod a+rw /dev/kvm
+          image='system-images;android-35;default;x86_64'
+          sdkmanager "$image" emulator
+          echo no | avdmanager create avd -n studio --package "$image" --force
+          "$ANDROID_HOME/emulator/emulator" -avd studio -no-window -no-snapshot -no-boot-anim -gpu swiftshader_indirect -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb wait-for-device
+          timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 2; done'
+          adb install -g build/app/outputs/flutter-apk/app-debug.apk
+          # Keep the user APK before the integration runner builds a different entrypoint.
+          mkdir -p build/delivery
+          cp build/app/outputs/flutter-apk/app-debug.apk build/delivery/Innerwave-Studio.apk
+          flutter test --no-pub integration_test/overdub_test.dart -d emulator-5554
       - uses: actions/upload-artifact@v4
         with:
           name: Innerwave-Studio-${{ matrix.target }}
           path: |
-            build/app/outputs/flutter-apk/app-debug.apk
+            build/delivery/Innerwave-Studio.apk
             build/ipa/Innerwave-Studio-unsigned.ipa
           if-no-files-found: error

@@ -17,13 +17,15 @@ sdkmanager "$image" emulator > "$RUNNER_TEMP/sdk-install.log"
 avd="$ANDROID_AVD_HOME/studio.avd"
 avdmanager create avd -n studio --package "$image" --device pixel_5 --path "$avd" --force
 test -s "$avd/config.ini"
+sed -i '/^disk\.dataPartition\.size=/d' "$avd/config.ini"
+printf 'disk.dataPartition.size=2048M\n' >> "$avd/config.ini"
 # Some command-line tool versions store the pointer in a different preferences
 # directory than the emulator. Bind this private AVD to its explicit path.
 printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-35\n' "$avd" > "$ANDROID_AVD_HOME/studio.ini"
 serial=emulator-5554
 log="$RUNNER_TEMP/innerwave-emulator.log"
 "$ANDROID_HOME/emulator/emulator" -avd studio -port 5554 -no-window -no-snapshot -no-boot-anim \
-    -no-audio -gpu swiftshader -cores 2 -memory 2048 -partition-size 2048 > "$log" 2>&1 &
+    -no-audio -gpu swiftshader -cores 2 -memory 2048 > "$log" 2>&1 &
 trap 'status=$?; if (( status )); then tail -n 60 "$log"; fi; adb -s "$serial" emu kill >/dev/null 2>&1 || true' EXIT
 timeout 120 adb -s "$serial" wait-for-device
 timeout 300 bash -c 'until [[ $(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d "\r") == 1 ]]; do sleep 2; done'

@@ -7,13 +7,12 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: innerwave-main-releases
-  queue: max
-
 jobs:
   version:
     if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: innerwave-release-metadata
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,12 +77,16 @@ jobs:
           flutter build apk --release --build-name="$VERSION" --build-number="$BUILD"
           mkdir -p build/delivery
           cp build/app/outputs/flutter-apk/app-release.apk "$APK_PATH"
-          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          if [[ ! -x "$build_tools/apksigner" ]]; then
+            sdkmanager_path=$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n1)
+            "$sdkmanager_path" 'build-tools;36.0.0'
+          fi
           "$build_tools/aapt" dump badging "$APK_PATH" > "$RUNNER_TEMP/apk-badging"
           grep -F "package: name='studio.innerwave.innerwave_studio'" "$RUNNER_TEMP/apk-badging" | grep -F "versionCode='$BUILD'" | grep -F "versionName='$VERSION'"
-          "$build_tools/apksigner" verify --print-certs "$APK_PATH" > "$RUNNER_TEMP/apk-signer"
-          certificate=$(keytool -exportcert -alias innerwave -keystore "$INNERWAVE_ANDROID_KEYSTORE_PATH" -storepass:env INNERWAVE_ANDROID_KEY_PASSWORD | sha256sum | cut -d' ' -f1)
-          grep -Fxi "Signer #1 certificate SHA-256 digest: $certificate" "$RUNNER_TEMP/apk-signer"
+          "$build_tools/apksigner" verify --print-certs-pem "$APK_PATH" > "$RUNNER_TEMP/apk-signer"
+          keytool -exportcert -alias innerwave -keystore "$INNERWAVE_ANDROID_KEYSTORE_PATH" -storepass:env INNERWAVE_ANDROID_KEY_PASSWORD -file "$RUNNER_TEMP/innerwave-expected.der"
+          python3 -B .github/scripts/verify_apk_signer.py "$RUNNER_TEMP/apk-signer" "$RUNNER_TEMP/innerwave-expected.der"
       - if: matrix.target == 'android'
         name: Test recording, mixing and codecs on an Android emulator
         run: bash .github/scripts/check_android.sh
@@ -121,6 +124,9 @@ jobs:
 
   publish:
     needs: [version, build]
+    concurrency:
+      group: innerwave-release-metadata
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       contents: write

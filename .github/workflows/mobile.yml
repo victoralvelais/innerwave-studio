@@ -67,11 +67,14 @@ jobs:
         name: Test recording, mixing and codecs on an Android emulator
         run: |
           sudo chmod a+rw /dev/kvm
+          sdkmanager_path=$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)
+          test -x "$sdkmanager_path"
+          export PATH="$(dirname "$sdkmanager_path"):$ANDROID_HOME/platform-tools:$PATH"
           image='system-images;android-35;default;x86_64'
           sdkmanager "$image" emulator
           echo no | avdmanager create avd -n studio --package "$image" --force
-          "$ANDROID_HOME/emulator/emulator" -avd studio -no-window -no-snapshot -no-boot-anim -gpu swiftshader_indirect -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
-          adb wait-for-device
+          "$ANDROID_HOME/emulator/emulator" -avd studio -port 5554 -no-window -no-snapshot -no-boot-anim -no-audio -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          timeout 120 adb wait-for-device || { cat "$RUNNER_TEMP/emulator.log"; exit 1; }
           timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 2; done'
           adb install -g build/delivery/Innerwave-Studio.apk
           flutter test integration_test/overdub_test.dart -d emulator-5554

@@ -21,13 +21,31 @@ flutter devices
 flutter run -d DEVICE_ID
 ```
 
-Use a physical phone and headphones for microphone, hardware latency and listening checks. In Xcode select your development team for a signed physical iPhone build. The GitHub Actions workflow builds a release-mode APK signed with the prototype debug key and an unsigned iPhone archive. The iPhone archive needs compatible signing or a compatible sideload environment.
+Use a physical phone and headphones for microphone, hardware latency and listening checks. In Xcode select your development team for a signed physical iPhone build.
+
+## Versioned mobile releases
+
+Each push to `main` and each new manual workflow dispatch on `main` gets its own version, including dispatches of the same commit. The `version` in `pubspec.yaml` supplies the minimum semantic version and build number. If that version is already taken, CI advances the patch above the highest reserved or published version. Change the pubspec version to start a new minor or major series. The draft records the GitHub run ID, source commit and mobile build number. GitHub’s **Re-run jobs** uses the original run ID and reuses that run’s version and build number.
+
+The Android emulator and iPhone simulator run the audio integration checks. CI inspects the embedded Android and iPhone versions, checks the APK signing certificate and confirms the iPhone device architecture. Once both jobs pass, the GitHub Release tagged `vX.Y.Z` publishes these three files together.
+
+- `Innerwave-Studio-vX.Y.Z.apk` — Android release signed with Innerwave’s dedicated prototype key.
+- `Innerwave-Studio-vX.Y.Z.ipa` — **unsigned** iPhone app for compatible signing or sideloading.
+- `SHA256SUMS.txt` — SHA-256 digests for both packages.
+
+Android can update an existing install in place when the app ID and signing certificate match. Earlier debug-key prototypes can require an uninstall before installing the first dedicated-key build. Uninstalling removes the phone’s local sessions, so export any mixes you want to keep first. Local release builds fall back to debug signing unless both signing environment variables in `android/app/build.gradle.kts` are supplied.
+
+GitHub Actions uses the repository secrets `INNERWAVE_ANDROID_KEYSTORE` (base64 PKCS12 with alias `innerwave`) and `INNERWAVE_ANDROID_KEY_PASSWORD`. Keep a backup of the signing key. Published assets are verified on a retry and retain their original bytes. An interrupted upload resumes in its draft. Only complete, verified pairs appear as published releases.
+
+From the project root, run `python -B tools/sync_releases.py` to backfill published pairs under `release/vX.Y.Z/`. The workspace receiver can run the same sync on a schedule.
 
 ## Verification and handoff
 
 ```sh
 flutter analyze --no-pub
 flutter test --no-pub
+python -B -m unittest discover -s .github/scripts -p 'test_*.py'
+python -B -m unittest discover -s tools -p 'test_*.py'
 ```
 
 - `lib/model.dart` defines the session manifest. Start, trim and length use stereo sample frames. Manifest writes use a temporary sibling and rename on completion.

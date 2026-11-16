@@ -4,6 +4,12 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val releaseStore = providers.environmentVariable("INNERWAVE_ANDROID_KEYSTORE_PATH").orNull
+val releasePassword = providers.environmentVariable("INNERWAVE_ANDROID_KEY_PASSWORD").orNull
+require((releaseStore == null) == (releasePassword == null)) {
+    "Supply both Android release signing environment variables."
+}
+
 android {
     namespace = "studio.innerwave.innerwave_studio"
     compileSdk = flutter.compileSdkVersion
@@ -29,11 +35,21 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        releaseStore?.let { path ->
+            create("innerwave") {
+                storeType = "PKCS12"
+                storeFile = file(path)
+                storePassword = releasePassword
+                keyAlias = "innerwave"
+                keyPassword = releasePassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseStore != null) "innerwave" else "debug")
         }
     }
 }

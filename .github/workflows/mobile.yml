@@ -8,11 +8,34 @@ permissions:
   contents: read
 
 concurrency:
-  group: mobile-${{ github.ref }}
-  cancel-in-progress: true
+  group: innerwave-main-releases
+  queue: max
 
 jobs:
+  version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.reserve.outputs.version }}
+      build: ${{ steps.reserve.outputs.build }}
+      published: ${{ steps.reserve.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
+      - run: python3 -B -m unittest discover -s tools -p 'test_*.py'
+      - name: Reserve semantic version and mobile build number
+        id: reserve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B .github/scripts/mobile_release.py reserve
+
   build:
+    needs: version
+    if: needs.version.outputs.published == 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -20,7 +43,11 @@ jobs:
           - { os: ubuntu-latest, target: android }
           - { os: macos-26, target: ios }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 55
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD: ${{ needs.version.outputs.build }}
+      APK_PATH: build/delivery/Innerwave-Studio-v${{ needs.version.outputs.version }}.apk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -31,27 +58,48 @@ jobs:
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
       - run: flutter pub get --enforce-lockfile
       - if: matrix.target == 'android'
+        name: Analyze and test the editor
         run: |
           flutter analyze --no-pub
           flutter test --no-pub
-          flutter build apk --release
-          mkdir -p build/delivery
-          cp build/app/outputs/flutter-apk/app-release.apk build/delivery/Innerwave-Studio.apk
-      - if: matrix.target == 'ios'
-        name: Build unsigned iPhone app
+      - if: matrix.target == 'android'
+        name: Sign and verify versioned Android APK
+        env:
+          INNERWAVE_ANDROID_KEYSTORE: ${{ secrets.INNERWAVE_ANDROID_KEYSTORE }}
+          INNERWAVE_ANDROID_KEY_PASSWORD: ${{ secrets.INNERWAVE_ANDROID_KEY_PASSWORD }}
         run: |
-          flutter build ios --release --no-codesign --no-pub
-          mkdir -p build/ipa/Payload
-          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
-          cd build/ipa
-          ditto -c -k --keepParent Payload Innerwave-Studio-unsigned.ipa
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innerwave-Studio-${{ matrix.target }}
-          path: |
-            build/delivery/Innerwave-Studio.apk
-            build/ipa/Innerwave-Studio-unsigned.ipa
-          if-no-files-found: error
+          set -euo pipefail
+          test -n "$INNERWAVE_ANDROID_KEYSTORE" && test -n "$INNERWAVE_ANDROID_KEY_PASSWORD" || { echo "::error::Android release signing secrets are missing."; exit 1; }
+          umask 077
+          export INNERWAVE_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/innerwave-release.p12"
+          trap 'rm -f "$INNERWAVE_ANDROID_KEYSTORE_PATH"' EXIT
+          printf '%s' "$INNERWAVE_ANDROID_KEYSTORE" | base64 --decode > "$INNERWAVE_ANDROID_KEYSTORE_PATH"
+          unset INNERWAVE_ANDROID_KEYSTORE
+          flutter build apk --release --build-name="$VERSION" --build-number="$BUILD"
+          mkdir -p build/delivery
+          cp build/app/outputs/flutter-apk/app-release.apk "$APK_PATH"
+          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
+          "$build_tools/aapt" dump badging "$APK_PATH" > "$RUNNER_TEMP/apk-badging"
+          grep -F "package: name='studio.innerwave.innerwave_studio'" "$RUNNER_TEMP/apk-badging" | grep -F "versionCode='$BUILD'" | grep -F "versionName='$VERSION'"
+          "$build_tools/apksigner" verify --print-certs "$APK_PATH" > "$RUNNER_TEMP/apk-signer"
+          certificate=$(keytool -exportcert -alias innerwave -keystore "$INNERWAVE_ANDROID_KEYSTORE_PATH" -storepass:env INNERWAVE_ANDROID_KEY_PASSWORD | sha256sum | cut -d' ' -f1)
+          grep -Fxi "Signer #1 certificate SHA-256 digest: $certificate" "$RUNNER_TEMP/apk-signer"
+      - if: matrix.target == 'android'
+        name: Test recording, mixing and codecs on an Android emulator
+        run: bash .github/scripts/check_android.sh
+      - if: matrix.target == 'ios'
+        name: Build and verify unsigned iPhone IPA
+        run: |
+          set -euo pipefail
+          flutter build ios --release --no-codesign --no-pub --build-name="$VERSION" --build-number="$BUILD"
+          app=build/ios/iphoneos/Runner.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$app/Info.plist")" = "$BUILD"
+          test "$(/usr/libexec/PlistBuddy -c 'Print DTPlatformName' "$app/Info.plist")" = iphoneos
+          xcrun lipo "$app/Runner" -verify_arch arm64
+          mkdir -p build/ipa/Payload build/delivery
+          cp -R "$app" build/ipa/Payload/
+          (cd build/ipa && ditto -c -k --keepParent Payload "../delivery/Innerwave-Studio-v$VERSION.ipa")
       - if: matrix.target == 'ios'
         name: Test recording, mixing and codecs on an iPhone simulator
         run: |
@@ -63,18 +111,31 @@ jobs:
           xcrun simctl install "$device" build/ios/iphonesimulator/Runner.app
           xcrun simctl privacy "$device" grant microphone studio.innerwave.innerwaveStudio
           flutter test --no-pub integration_test/overdub_test.dart -d "$device"
-      - if: matrix.target == 'android'
-        name: Test recording, mixing and codecs on an Android emulator
-        run: |
-          sudo chmod a+rw /dev/kvm
-          sdkmanager_path=$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)
-          test -x "$sdkmanager_path"
-          export PATH="$(dirname "$sdkmanager_path"):$ANDROID_HOME/platform-tools:$PATH"
-          image='system-images;android-35;default;x86_64'
-          sdkmanager "$image" emulator
-          echo no | avdmanager create avd -n studio --package "$image" --force
-          "$ANDROID_HOME/emulator/emulator" -avd studio -port 5554 -no-window -no-snapshot -no-boot-anim -no-audio -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
-          timeout 120 adb wait-for-device || { cat "$RUNNER_TEMP/emulator.log"; exit 1; }
-          timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 2; done'
-          adb install -g build/delivery/Innerwave-Studio.apk
-          flutter test integration_test/overdub_test.dart -d emulator-5554
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innerwave-Studio-v${{ env.VERSION }}-${{ matrix.target }}
+          path: build/delivery/Innerwave-Studio-v${{ env.VERSION }}.*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Innerwave-Studio-v${{ needs.version.outputs.version }}-*
+          path: build/delivery
+          merge-multiple: true
+      - name: Verify digests and publish the pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          BUILD: ${{ needs.version.outputs.build }}
+        run: python3 -B .github/scripts/mobile_release.py publish build/delivery

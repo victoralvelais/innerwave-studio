@@ -1,4 +1,5 @@
 import Flutter
+import AVFoundation
 import UIKit
 
 @main
@@ -19,11 +20,15 @@ import UIKit
         do {
           let value: Any?
           switch call.method {
+          case "rate":
+            let rate = Int(AVAudioSession.sharedInstance().sampleRate.rounded())
+            value = rate > 0 ? rate : 44_100
           case "start", "write":
-            guard let pcm = call.arguments as? FlutterStandardTypedData else {
+            let settings = call.arguments as? [String: Any]
+            guard let pcm = (settings?["data"] ?? call.arguments) as? FlutterStandardTypedData else {
               throw StereoPreview.failure("Expected PCM audio.")
             }
-            if call.method == "start" { try output.start(pcm.data) }
+            if call.method == "start" { try output.start(pcm.data, rate: (settings?["rate"] as? NSNumber)?.doubleValue ?? 44_100, floating: settings != nil) }
             else { try output.write(pcm.data) }
             value = nil
           case "position": value = output.position

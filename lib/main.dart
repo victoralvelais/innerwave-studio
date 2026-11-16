@@ -11,6 +11,7 @@ import 'export_sheet.dart';
 import 'model.dart';
 import 'studio.dart';
 import 'studio_view.dart';
+import 'tone_editor.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -73,6 +74,8 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
   StreamSubscription<dynamic>? interruptions, unplug;
   String? selected, failure, busy;
   bool suspendAfterWork = false;
+  bool _gainDirty = false;
+  Future<void> _pendingGain = Future.value();
   Clip? get clip => engine.mix.clips.where((c) => c.id == selected).firstOrNull;
   bool get editable => busy == null && !engine.recording;
 
@@ -113,11 +116,17 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _commitGain();
     if (state == AppLifecycleState.paused && busy == null) _suspend();
   }
 
   void _suspend() {
     if (!mounted || !engine.initialized) return;
+    if (engine.tonePreviewing) {
+      unawaited(engine
+          .stopTonePreview()
+          .catchError((Object e) => _message(_describe(e))));
+    }
     if (busy != null) {
       suspendAfterWork = true;
     } else if (engine.recording) {
@@ -134,7 +143,9 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
     engine.onTransportChanged = null;
     interruptions?.cancel();
     unplug?.cancel();
-    unawaited(engine.dispose());
+    unawaited(_flushGain().whenComplete(engine.dispose).catchError((Object e) {
+      FlutterError.reportError(FlutterErrorDetails(exception: e));
+    }));
     super.dispose();
   }
 
@@ -147,10 +158,53 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
           SnackBar(content: Text(text), behavior: SnackBarBehavior.floating));
   }
 
+  void _changeGain(Clip c, double gain) {
+    if (!editable || c.gain == gain) return;
+    setState(() => c.gain = gain);
+    _gainDirty = true;
+    engine.audition(null);
+  }
+
+  Future<void> _flushGain() {
+    if (_gainDirty) {
+      _gainDirty = false;
+      _pendingGain = engine.save().catchError((Object e, StackTrace stack) {
+        _gainDirty = true;
+        Error.throwWithStackTrace(e, stack);
+      });
+    }
+    return _pendingGain;
+  }
+
+  void _commitGain() {
+    unawaited(_flushGain().catchError((Object e) => _message(_describe(e))));
+  }
+
+  void _changeLoopRange(String choice) {
+    _run('Updating loop range', () async {
+      if (choice == 'all') {
+        await engine.clearLoopRange();
+        return;
+      }
+      final range = engine.customLoopRange;
+      final at = engine.liveFrame.clamp(0, engine.mix.end);
+      final a = choice == 'a' ? at : range?.start ?? 0;
+      final b = choice == 'b' ? at : range?.end ?? engine.mix.end;
+      if (a >= b) {
+        _message(choice == 'a'
+            ? 'Place the playhead before B to set A.'
+            : 'Place the playhead after A to set B.');
+        return;
+      }
+      await engine.setLoopRange(a, b);
+    });
+  }
+
   Future<void> _run(String status, Future<void> Function() work) async {
     if (busy != null) return;
     setState(() => busy = status);
     try {
+      await _flushGain();
       await work();
     } catch (e) {
       _message(_describe(e));
@@ -261,13 +315,18 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                       const Padding(
                           padding:
                               EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                          child: Text('Import a layer',
+                          child: Text('Add a layer',
                               style: TextStyle(fontSize: 22))),
                       Padding(
                           padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
                           child: Text(
                               'Place a file at ${timeOf(engine.cursor, fraction: true)}.',
                               style: const TextStyle(color: softText))),
+                      ListTile(
+                          leading: const Icon(Icons.waves_rounded, color: mint),
+                          title: const Text('Tone generator'),
+                          subtitle: const Text('Create a stereo binaural beat'),
+                          onTap: () => Navigator.pop(ctx, 'tone')),
                       for (final t in LayerType.values)
                         ListTile(
                             leading: Icon(glyph(t), color: tone(t)),
@@ -286,11 +345,84 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                           onTap: () => Navigator.pop(ctx, 'discover')),
                       const SizedBox(height: 12),
                     ]))));
-        if (type == 'discover') {
+        if (type == 'tone') {
+          await _openTone();
+        } else if (type == 'discover') {
           await _openDiscover();
         } else if (type is LayerType && await engine.importClip(type)) {
           selected = engine.mix.clips.last.id;
         }
+      });
+
+  Future<void> _openTone([Clip? existing]) async {
+    await engine.pause();
+    if (!mounted) return;
+    ToneDraft? draft;
+    try {
+      draft = await Navigator.push<ToneDraft>(
+          context,
+          MaterialPageRoute(
+              builder: (_) => ToneEditor(studio: engine, existing: existing)));
+    } finally {
+      await engine.stopTonePreview();
+    }
+    if (draft == null) return;
+    if (existing == null) {
+      selected =
+          (await engine.addTone(draft.tone, draft.frames, gainDb: draft.gain))
+              .id;
+    } else {
+      final index = engine.mix.clips.indexWhere((c) => c.id == existing.id);
+      if (index < 0) return;
+      final changed = existing.copyWith(
+          tone: draft.tone,
+          length: draft.frames,
+          frames: draft.frames == existing.length
+              ? existing.frames
+              : existing.trim + draft.frames)
+        ..gain = draft.gain;
+      engine.mix.clips[index] = changed;
+      engine.cursor = engine.cursor.clamp(0, engine.mix.end);
+      await engine.save();
+    }
+  }
+
+  Widget _earControls() =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Independent ear controls',
+            style: TextStyle(fontWeight: FontWeight.w600)),
+        Wrap(children: [
+          for (final type in LayerType.values)
+            Builder(builder: (_) {
+              final value = engine.mix.independent(type);
+              final name = switch (type) {
+                LayerType.beat => 'Beats',
+                LayerType.texture => 'ASMR',
+                LayerType.voice => 'Voice'
+              };
+              void toggle() => _run('Updating ear controls',
+                  () => engine.setIndependent(type, !value));
+              return MergeSemantics(
+                  child: InkWell(
+                      onTap: editable ? toggle : null,
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Checkbox(
+                            key: ValueKey('independent-${type.name}'),
+                            value: value,
+                            onChanged: editable ? (_) => toggle() : null),
+                        Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Text(name)),
+                      ])));
+            })
+        ]),
+      ]);
+
+  void _routeClip(Clip clip, EarRoute ear) => _run('Routing clip', () async {
+        final index = engine.mix.clips.indexWhere((c) => c.id == clip.id);
+        if (index < 0) return;
+        engine.mix.clips[index] = clip.copyWith(ear: ear);
+        await engine.save();
       });
 
   Future<void> _openDiscover() async {
@@ -399,8 +531,11 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
         final settings = await showModalBottomSheet<ExportSettings>(
             context: context,
             isScrollControlled: true,
-            builder: (_) =>
-                ExportSheet(initial: exportSettings, frames: engine.mix.end));
+            builder: (_) => ExportSheet(
+                initial: exportSettings,
+                frames: engine.mix.end,
+                masterRate: engine.mix.masterRate,
+                highPrecision: engine.mix.highPrecision));
         if (settings == null || !mounted) return;
         setState(() {
           exportSettings = settings;
@@ -438,7 +573,7 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                 Text(c.name,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w600)),
-                Text('${c.type.label}  ·  ${c.gain.toStringAsFixed(1)} dB',
+                Text('${c.type.label}  ·  ${gainLabel(c.gain)}',
                     style: const TextStyle(fontSize: 12, color: softText)),
               ])),
           IconButton(
@@ -472,6 +607,29 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                   icon: const Icon(Icons.tune_rounded, size: 16),
                   label: const Text('Edit clip'))),
         ]),
+        if (c.tone != null)
+          TextButton.icon(
+              onPressed: editable
+                  ? () => _run('Editing tone', () => _openTone(c))
+                  : null,
+              icon: const Icon(Icons.waves_rounded, size: 17),
+              label: const Text('Tune frequencies')),
+        if (c.tone == null && engine.mix.independent(c.type)) ...[
+          const Text('Output ears',
+              style: TextStyle(color: softText, fontSize: 12)),
+          Wrap(spacing: 6, children: [
+            for (final ear in EarRoute.values)
+              ChoiceChip(
+                  key: ValueKey('ear-${c.id}-${ear.name}'),
+                  selected: ear == c.ear,
+                  label: Text(switch (ear) {
+                    EarRoute.both => 'Both',
+                    EarRoute.left => 'Left',
+                    EarRoute.right => 'Right'
+                  }),
+                  onSelected: editable ? (_) => _routeClip(c, ear) : null)
+          ]),
+        ],
         if (c.credit?.isNotEmpty == true)
           TextButton.icon(
               onPressed: () => _credit(c),
@@ -522,6 +680,32 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                                                     fontFamily: 'monospace',
                                                     fontSize: 20))),
                                       ]))),
+                          Semantics(
+                            toggled: engine.loopEnabled,
+                            child: IconButton(
+                              key: const ValueKey('loop-playback'),
+                              tooltip: engine.loopEnabled
+                                  ? 'Stop looping timeline mix'
+                                  : 'Loop timeline mix',
+                              isSelected: engine.loopEnabled,
+                              color: engine.loopEnabled ? mint : softText,
+                              onPressed: editable && engine.mix.end > 0
+                                  ? () => _run('Updating loop',
+                                      () => engine.setLoop(!engine.loopEnabled))
+                                  : null,
+                              icon: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.repeat_rounded, size: 21),
+                                    Text('Loop',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: engine.loopEnabled
+                                                ? mint
+                                                : softText)),
+                                  ]),
+                            ),
+                          ),
                           IconButton(
                               tooltip: 'Go to start',
                               onPressed: editable
@@ -640,12 +824,22 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                               ]),
                               const SizedBox(height: 8),
                               Arrangement(
+                                  key: ValueKey(engine.mix.id),
                                   mix: engine.mix,
                                   cursor: engine.liveFrame,
                                   selected: selected,
                                   enabled: editable,
                                   onSelect: (c) =>
                                       setState(() => selected = c.id),
+                                  onGainChanged: _changeGain,
+                                  onGainEnd: _commitGain,
+                                  onLoopRange: _changeLoopRange,
+                                  loopStart: (engine.loopRange ??
+                                          engine.customLoopRange)
+                                      ?.start,
+                                  loopEnd: (engine.loopRange ??
+                                          engine.customLoopRange)
+                                      ?.end,
                                   onRecord: _record,
                                   onSeek: (n) =>
                                       _run('Seeking', () => engine.seek(n)),
@@ -663,6 +857,8 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                                             .clamp(0, engine.mix.end);
                                         await engine.save();
                                       })),
+                              const SizedBox(height: 14),
+                              _earControls(),
                               if (engine.mix.removed.isNotEmpty)
                                 Align(
                                     alignment: Alignment.centerLeft,
@@ -670,10 +866,9 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                                         onPressed: editable
                                             ? () => _run('Restoring layer',
                                                     () async {
-                                                  selected = engine.mix
-                                                      .restoreLayer()
+                                                  selected = (await engine
+                                                          .restoreLayer())
                                                       .id;
-                                                  await engine.save();
                                                 })
                                             : null,
                                         icon: const Icon(Icons.undo_rounded,

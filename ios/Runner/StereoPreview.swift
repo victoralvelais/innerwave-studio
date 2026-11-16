@@ -4,7 +4,8 @@ import AVFoundation
 // Audio session and microphone routing are owned by the editor transport.
 final class StereoPreview {
   let queue = DispatchQueue(label: "studio.innerwave.preview", qos: .userInitiated)
-  private let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+  private var format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+  private var stride = 4
   private var engine: AVAudioEngine?
   private var player: AVAudioPlayerNode?
   private var accepted: Int64 = 0
@@ -16,8 +17,13 @@ final class StereoPreview {
     NSError(domain: "studio.innerwave.preview", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
   }
 
-  func start(_ data: Data) throws {
+  func start(_ data: Data, rate: Double = 44_100, floating: Bool = false) throws {
     _ = stop()
+    guard let selected = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else {
+      throw Self.failure("Invalid stereo output format.")
+    }
+    format = selected
+    stride = floating ? 8 : 4
     let graph = AVAudioEngine()
     let node = AVAudioPlayerNode()
     graph.attach(node)
@@ -40,8 +46,8 @@ final class StereoPreview {
 
   func write(_ data: Data) throws {
     guard let node = player else { throw Self.failure("Stereo output has stopped.") }
-    guard !data.isEmpty, data.count % 4 == 0,
-          let count = AVAudioFrameCount(exactly: data.count / 4),
+    guard !data.isEmpty, data.count % stride == 0,
+          let count = AVAudioFrameCount(exactly: data.count / stride),
           let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count),
           let channels = buffer.floatChannelData else {
       throw Self.failure("Expected complete stereo audio frames.")
@@ -49,7 +55,12 @@ final class StereoPreview {
     buffer.frameLength = count
     data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
       for frame in 0..<Int(count) {
-        let i = frame * 4
+        let i = frame * stride
+        if stride == 8 {
+          channels[0][frame] = bytes.loadUnaligned(fromByteOffset: i, as: Float.self)
+          channels[1][frame] = bytes.loadUnaligned(fromByteOffset: i + 4, as: Float.self)
+          continue
+        }
         let l = UInt16(bytes[i]) | (UInt16(bytes[i + 1]) << 8)
         let r = UInt16(bytes[i + 2]) | (UInt16(bytes[i + 3]) << 8)
         channels[0][frame] = Float(Int16(bitPattern: l)) / 32768

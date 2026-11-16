@@ -151,4 +151,62 @@ void main() {
             .removed,
         isEmpty);
   });
+
+  test(
+      'loop fills every device buffer with the unmuted timeline between A and B',
+      () async {
+    const channel = MethodChannel('innerwave/preview');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final blocks = <Uint8List>[];
+    var head = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      switch (call.method) {
+        case 'start':
+          head = 0;
+          blocks.add(call.arguments as Uint8List);
+        case 'write':
+          blocks.add(call.arguments as Uint8List);
+        case 'position':
+        case 'stop':
+          return head;
+      }
+      return null;
+    });
+    final errors = <Object>[];
+    final preview =
+        Preview(onPosition: (_) {}, onStopped: (_) {}, onError: errors.add);
+    try {
+      final muted =
+          Clip.fromJson({...voice.toJson(), 'id': 'muted', 'muted': true});
+      final mix = Mix('loop', 'Loop', [muted, voice]);
+      for (final width in [1, 127, 5071]) {
+        blocks.clear();
+        const start = 4234;
+        final region = (start: start, end: start + width);
+        final reader = MixReader(dir.path, mix, start);
+        final single = Uint8List.fromList(reader.read(width));
+        reader.close();
+        final offset = width ~/ 2;
+        await preview.play(dir.path, mix, start + offset, loop: region);
+        head = 3000;
+        for (var i = 0; i < 100 && blocks.length < 2; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(blocks.length, greaterThanOrEqualTo(2));
+        var p = offset * frameBytes;
+        for (final bytes in blocks) {
+          for (final b in bytes) {
+            if (single[p++ % single.length] != b)
+              fail('Wrong loop sample, width $width at byte $p');
+          }
+        }
+        expect(await preview.pause(), start + (offset + head) % width);
+      }
+      expect(errors, isEmpty);
+    } finally {
+      await preview.dispose();
+      messenger.setMockMethodCallHandler(channel, null);
+    }
+  });
 }

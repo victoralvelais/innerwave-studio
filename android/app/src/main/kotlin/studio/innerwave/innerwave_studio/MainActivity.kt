@@ -16,7 +16,13 @@ class MainActivity : FlutterActivity() {
         channel?.setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
-                    "start" -> { output.start(call.arguments as ByteArray); result.success(null) }
+                    "rate" -> result.success(android.media.AudioTrack.getNativeOutputSampleRate(android.media.AudioManager.STREAM_MUSIC))
+                    "start" -> {
+                        val args = call.arguments
+                        if (args is ByteArray) output.start(args, 44100, false)
+                        else output.start(call.argument<ByteArray>("data")!!, call.argument<Int>("rate")!!, true)
+                        result.success(null)
+                    }
                     "write" -> { output.write(call.arguments as ByteArray); result.success(null) }
                     "position" -> result.success(output.position())
                     "stop" -> result.success(output.stop())

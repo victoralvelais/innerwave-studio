@@ -64,6 +64,6 @@ void registerLiveDiscoveryTest() {
       }
     }
     expect(await (await studio.rendered()).length(),
-        44 + studio.mix.end * frameBytes);
+        44 + studio.mix.atRate(studio.mix.masterRate).end * 16);
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:ffmpeg_kit_flutter_new_audio/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_audio/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_audio/return_code.dart';
 
 import 'model.dart';
 
 enum ExportFormat {
-  wav('WAV', 'wav', 'audio/wav', 'pcm_s16le', 'wav'),
+  wav('WAV', 'wav', 'audio/wav', 'pcm_f64le', 'wav'),
   mp3('MP3', 'mp3', 'audio/mpeg', 'libmp3lame', 'mp3'),
   aac('AAC', 'm4a', 'audio/mp4', 'aac', 'ipod'),
   vorbis('Ogg Vorbis', 'ogg', 'audio/ogg', 'libvorbis', 'ogg');
@@ -79,11 +80,11 @@ const _stereoStream = [
   '-dn',
   '-map_metadata',
   '-1',
-  '-ar',
-  '44100',
   '-ac',
   '2',
 ];
+const _containers =
+    'wav,mp3,mov,aac,aiff,flac,ogg,matroska,webm,avi,mpeg,mpegts';
 
 Future<void> _convert(List<String> args, String failure) async {
   final session = await FFmpegKit.executeWithArguments(args);
@@ -104,10 +105,12 @@ Future<int> decodeToPcm(File input, File output) async {
     await _convert([
       ..._localInput,
       '-format_whitelist',
-      'wav,mp3,mov,aac,aiff,flac,ogg,matroska,webm,avi,mpeg,mpegts',
+      _containers,
       '-i',
       input.absolute.path,
       ..._stereoStream,
+      '-ar',
+      '44100',
       '-c:a',
       'pcm_s16le',
       '-f',
@@ -122,6 +125,99 @@ Future<int> decodeToPcm(File input, File output) async {
     return bytes ~/ frameBytes;
   } finally {
     if (await part.exists()) await part.delete();
+  }
+}
+
+/// Decode once at the stream's native rate. Binary64 can represent all
+/// integer PCM up to 32 bits and floating PCM through double precision.
+Future<({int rate, int frames})> decodeNative(File input, File output) async {
+  final info = await FFprobeKit.executeWithArguments([
+    '-v',
+    'error',
+    '-protocol_whitelist',
+    'file',
+    '-format_whitelist',
+    _containers,
+    '-select_streams',
+    'a:0',
+    '-show_entries',
+    'stream=sample_rate,channels',
+    '-of',
+    'json',
+    input.absolute.path
+  ]);
+  if (!ReturnCode.isSuccess(await info.getReturnCode())) {
+    throw const FormatException('Could not read the audio stream.');
+  }
+  final streams = jsonDecode((await info.getOutput())!)['streams'] as List;
+  if (streams.isEmpty)
+    throw const FormatException(
+        'This file has no audio track. Choose a video with sound.');
+  final stream = streams.first;
+  final rate = int.parse(stream['sample_rate'].toString());
+  if (rate <= 0)
+    throw const FormatException('The source has no usable sample rate.');
+  final part = File('${output.path}.part');
+  try {
+    await _convert([
+      ..._localInput,
+      '-format_whitelist',
+      _containers,
+      '-i',
+      input.absolute.path,
+      ..._stereoStream,
+      if (stream['channels'] == 1) ...['-af', 'pan=stereo|c0=c0|c1=c0'],
+      '-c:a',
+      'pcm_f64le',
+      '-f',
+      'f64le',
+      part.path
+    ], 'Could not decode the audio stream.');
+    final bytes = await part.length();
+    if (bytes < 16 || bytes % 16 != 0)
+      throw const FormatException('The decoder returned incomplete audio.');
+    await part.rename(output.path);
+    return (rate: rate, frames: bytes ~/ 16);
+  } finally {
+    if (await part.exists()) await part.delete();
+  }
+}
+
+/// Only clips with a different clock need a rate-specific playback cache.
+/// The immutable native-rate source remains the input to every conversion.
+Future<void> prepareSources(String assets, Mix mix, int rate) async {
+  for (final c in mix.clips) {
+    if (c.tone != null || c.sourceRate == rate) continue;
+    final out = File('$assets/${c.fileAtRate(rate)}');
+    if (await out.exists()) continue;
+    final part = File('${out.path}.${makeId()}.part');
+    try {
+      final frames =
+          scaleFrames(c.sourceFrames ?? c.frames, c.sourceRate, rate);
+      await _convert([
+        ..._localInput,
+        '-f',
+        c.floatingSource ? 'f64le' : 's16le',
+        '-ar',
+        '${c.sourceRate}',
+        '-ac',
+        '2',
+        '-i',
+        '$assets/${c.source}',
+        '-af',
+        'aresample=$rate:filter_size=64:osf=dbl,apad=whole_len=$frames,atrim=end_sample=$frames',
+        '-c:a',
+        'pcm_f64le',
+        '-f',
+        'f64le',
+        part.path
+      ], 'Could not match audio sample rates.');
+      if (await part.length() != frames * 16)
+        throw const FormatException('Incomplete sample-rate conversion.');
+      if (!await out.exists()) await part.rename(out.path);
+    } finally {
+      if (await part.exists()) await part.delete();
+    }
   }
 }
 

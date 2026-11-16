@@ -116,4 +116,36 @@ void main() {
             .toJson(),
         c.toJson());
   });
+
+  test(
+      'linked center and independently crossed ears are synthesized at exact frequencies',
+      () {
+    const tone = BeatTone(base: 250, beat: 4, left: 432.12, right: 222.34);
+    final c = Clip(
+        id: 'tone',
+        source: 'oscillator',
+        name: 'tone',
+        type: LayerType.beat,
+        frames: sampleRate,
+        length: sampleRate,
+        tone: tone,
+        peaks: [],
+        gain: 0,
+        trim: 0);
+    final session = Mix('ear', 'Ear test', [c]);
+    for (final separate in [false, true]) {
+      if (separate) session.independentLayers.add(LayerType.beat);
+      final path = '${dir.path}/beat-$separate.wav';
+      renderMix(dir.path, Mix.fromJson(session.toJson()), path);
+      final wav = ByteData.sublistView(File(path).readAsBytesSync());
+      for (var i = 1000; i < 9000; i += 13) {
+        for (var ch = 0; ch < 2; ch++) {
+          final hz =
+              ch == 0 ? (separate ? 432.12 : 248) : (separate ? 222.34 : 252);
+          expect(wav.getFloat64(44 + 16 * i + ch * 8, Endian.little),
+              closeTo(.4 * math.sin(2 * math.pi * hz * i / sampleRate), 1e-12));
+        }
+      }
+    }
+  });
 }

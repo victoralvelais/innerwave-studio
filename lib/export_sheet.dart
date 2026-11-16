@@ -5,9 +5,16 @@ import 'model.dart';
 import 'studio_view.dart';
 
 class ExportSheet extends StatefulWidget {
-  const ExportSheet({super.key, required this.initial, required this.frames});
+  const ExportSheet(
+      {super.key,
+      required this.initial,
+      required this.frames,
+      this.masterRate = sampleRate,
+      this.highPrecision = false});
   final ExportSettings initial;
   final int frames;
+  final int masterRate;
+  final bool highPrecision;
   @override
   State<ExportSheet> createState() => _ExportSheetState();
 }
@@ -20,7 +27,9 @@ class _ExportSheetState extends State<ExportSheet> {
   Widget build(BuildContext context) {
     final pcm = format == ExportFormat.wav;
     final bytes = pcm
-        ? widget.frames * frameBytes + 44
+        ? scaleFrames(widget.frames, sampleRate, widget.masterRate) *
+                (widget.highPrecision ? 16 : frameBytes) +
+            44
         : (widget.frames / sampleRate * bitrate * 1000 / 8).round();
     final size = bytes >= 1000000
         ? '${(bytes / 1000000).toStringAsFixed(1)} MB'
@@ -37,7 +46,7 @@ class _ExportSheetState extends State<ExportSheet> {
                           TextStyle(fontSize: 23, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
                   Text(
-                      '${timeOf(widget.frames, fraction: true)}   ·   Stereo   ·   44.1 kHz',
+                      '${timeOf(widget.frames, fraction: true)}   ·   Stereo   ·   ${widget.masterRate / 1000} kHz master',
                       style: const TextStyle(color: softText, fontSize: 13)),
                   const SizedBox(height: 14),
                   for (final option in ExportFormat.values)
@@ -47,7 +56,9 @@ class _ExportSheetState extends State<ExportSheet> {
                         dense: true,
                         title: Text(option.label),
                         subtitle: Text(switch (option) {
-                          ExportFormat.wav => 'Uncompressed PCM · .wav',
+                          ExportFormat.wav => widget.highPrecision
+                              ? 'Lossless · 64-bit float WAV'
+                              : 'Lossless · 16-bit PCM WAV',
                           ExportFormat.mp3 => 'MPEG Layer III · .mp3',
                           ExportFormat.aac => 'AAC-LC in MPEG-4 · .m4a',
                           ExportFormat.vorbis => 'Vorbis in Ogg · .ogg',

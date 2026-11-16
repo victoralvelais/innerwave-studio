@@ -83,19 +83,19 @@ void registerVideoFileChecks() {
       expect(studio.mix.clips.last.start, at);
       final rendered =
           ByteData.sublistView(await (await studio.rendered()).readAsBytes());
-      expect(rendered.getUint32(24, Endian.little), sampleRate);
+      expect(rendered.getUint32(24, Endian.little), 48000);
       expect(rendered.getUint16(22, Endian.little), 2);
-      final start = 44 + at * frameBytes;
-      expect(rendered.getInt16(start - frameBytes, Endian.little), 0);
-      for (final channel in [0, 2]) {
+      final start = 44 + scaleFrames(at, sampleRate, 48000) * 16;
+      expect(rendered.getFloat64(start - 16, Endian.little), 0);
+      for (final channel in [0, 8]) {
         expect(
             [
               for (var f = 2200; f < 2300; f++)
                 rendered
-                    .getInt16(start + frameBytes * f + channel, Endian.little)
+                    .getFloat64(start + 16 * f + channel, Endian.little)
                     .abs()
             ].reduce((a, b) => a > b ? a : b),
-            greaterThan(500));
+            greaterThan(.01));
       }
     }
     final silent = File('${directory.path}/silent.mp4');

@@ -10,6 +10,7 @@ import 'package:innerwave_studio/model.dart';
 import 'package:innerwave_studio/studio.dart';
 import 'package:integration_test/integration_test.dart';
 import 'video_file_checks.dart';
+import 'stereo_checks.dart';
 import 'discovery_live_test.dart' show registerLiveDiscoveryTest;
 
 // The first second of the starter mix contains a different tone in each ear.
@@ -91,18 +92,20 @@ void main() {
     expect(String.fromCharCodes(bytes.take(4)), 'RIFF');
     expect(header.getUint16(22, Endian.little), 2);
     expect(header.getUint32(24, Endian.little), 44100);
-    expect(bytes.length, 44 + studio.mix.end * 4);
+    expect(bytes.length, 44 + studio.mix.end * 16);
 
     // Exercise the same normalizer used for files selected on the phone.
     final output = File('${studio.cache.path}/roundtrip-${makeId()}.pcm');
     final frames = await decodeToPcm(mix, output);
     expect(frames, studio.mix.end);
     final pcm = ByteData.sublistView(await output.readAsBytes());
-    expect(pcm.lengthInBytes, bytes.length - 44);
+    expect(pcm.lengthInBytes, (bytes.length - 44) ~/ 4);
     var maxError = 0;
     for (int i = 0; i < pcm.lengthInBytes; i += 274) {
       final difference = (pcm.getInt16(i, Endian.little) -
-              header.getInt16(44 + i, Endian.little))
+              (header.getFloat64(44 + i * 4, Endian.little) * 32768)
+                  .round()
+                  .clamp(-32768, 32767))
           .abs();
       if (difference > maxError) maxError = difference;
     }
@@ -110,7 +113,7 @@ void main() {
     await output.delete();
 
     final codecs = {
-      ExportFormat.wav: 'pcm_s16le',
+      ExportFormat.wav: 'pcm_f64le',
       ExportFormat.mp3: 'mp3',
       ExportFormat.aac: 'aac',
       ExportFormat.vorbis: 'vorbis',
@@ -139,6 +142,7 @@ void main() {
     }
   });
   registerVideoFileChecks();
+  registerStereoChecks();
   if (const bool.fromEnvironment('TEST_LIVE_SOURCES'))
     registerLiveDiscoveryTest();
 }

@@ -48,8 +48,8 @@ class _ClipEditorState extends State<ClipEditor> {
     } else if (d <= b || d > clip.frames) {
       message =
           'Source out must follow source in and fit within ${_seconds(clip.frames)} s.';
-    } else if ((a + d - b) * frameBytes > 0xffffffff - 36) {
-      message = 'That placement exceeds the WAV file size limit.';
+    } else if (a + d - b > frameAt(24 * 3600)) {
+      message = 'That placement exceeds 24 hours.';
     } else {
       clip.name = name.text.trim();
       clip.start = a;
@@ -91,7 +91,7 @@ class _ClipEditorState extends State<ClipEditor> {
       Column(children: [
         Row(children: [
           Expanded(child: Text(title)),
-          Text('${value > 0 ? '+' : ''}${value.toStringAsFixed(1)} dB',
+          Text(gainLabel(value),
               style: TextStyle(
                   color: tone(clip.type),
                   fontFamily: 'monospace',
@@ -101,7 +101,7 @@ class _ClipEditorState extends State<ClipEditor> {
             min: min,
             max: max,
             divisions: ((max - min) * 2).round(),
-            value: value,
+            value: value.clamp(min, max),
             activeColor: tone(clip.type),
             onChanged: (v) {
               setState(() => set(v));
@@ -143,8 +143,8 @@ class _ClipEditorState extends State<ClipEditor> {
                       Expanded(child: _field('Source out', end))
                     ]),
                     const SizedBox(height: 18),
-                    _slider(
-                        'Clip level', clip.gain, -60, 6, (v) => clip.gain = v),
+                    _slider('Clip level', clip.gain, minClipGain, maxClipGain,
+                        (v) => clip.gain = v),
                     if (clip.type == LayerType.voice) ...[
                       const Divider(),
                       const SizedBox(height: 10),

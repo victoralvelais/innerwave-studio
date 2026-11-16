@@ -132,70 +132,118 @@ class _Source {
   }
 }
 
+/// Sequential, bounded PCM reader used by both the output device and export.
+class MixReader {
+  MixReader(String assets, Mix mix, this.position) : end = mix.end {
+    try {
+      for (final clip in mix.clips.where((c) => !c.muted && c.end > position)) {
+        final file = File('$assets/${clip.source}').openSync();
+        final source = _Source(clip, file);
+        inputs.add(source);
+        if (file.lengthSync() < (clip.trim + clip.length) * frameBytes) {
+          throw FormatException('Missing samples in "${clip.name}".');
+        }
+        final offset = math.max(0, position - clip.start);
+        // A bounded filter pre-roll reconstructs the voice EQ state on seek.
+        final warm = clip.type == LayerType.voice &&
+                (clip.warmth != 0 || clip.presence != 0)
+            ? math.min(1024, offset)
+            : 0;
+        file.setPositionSync((clip.trim + offset - warm) * frameBytes);
+        if (warm > 0) {
+          if (file.readIntoSync(scratch, 0, warm * frameBytes) !=
+              warm * frameBytes) {
+            throw FileSystemException('Audio file ended early', clip.name);
+          }
+          for (int i = 0; i < warm * 2; i++) {
+            source.adjust(data.getInt16(i * 2, Endian.little) / 32768, i % 2);
+          }
+        }
+      }
+    } catch (_) {
+      close();
+      rethrow;
+    }
+  }
+
+  final inputs = <_Source>[];
+  final scratch = Uint8List(_block * frameBytes);
+  late final data = ByteData.sublistView(scratch);
+  final samples = Float64List(_block * 2);
+  final int end;
+  int position;
+
+  /// The returned block is valid until the next call to read.
+  Uint8List read(int requested) {
+    if (requested < 0 || requested > _block)
+      throw RangeError.range(requested, 0, _block);
+    final pos = position;
+    final n = math.min(requested, math.max(0, end - pos));
+    samples.fillRange(0, n * 2, 0);
+    for (final input in inputs) {
+      final clip = input.clip;
+      final first = math.max(pos, clip.start);
+      final last = math.min(pos + n, clip.end);
+      if (first >= last) continue;
+      final bytes = (last - first) * frameBytes;
+      if (input.file.readIntoSync(scratch, 0, bytes) != bytes) {
+        throw FileSystemException('Audio file ended early', clip.name);
+      }
+      for (int i = 0; i < last - first; i++) {
+        final frame = first + i;
+        final ramp = math.min(
+            1.0, math.min(frame - clip.start, clip.end - frame - 1) / 128);
+        for (int ch = 0; ch < 2; ch++) {
+          final x =
+              data.getInt16(i * frameBytes + ch * 2, Endian.little) / 32768;
+          samples[(frame - pos) * 2 + ch] +=
+              input.adjust(x, ch) * input.gain * ramp;
+        }
+      }
+    }
+    for (int i = 0; i < n; i++) {
+      // Apply one soft overload gain to both channels, preserving stereo balance.
+      final peak = math.max(samples[i * 2].abs(), samples[i * 2 + 1].abs());
+      final excess = peak - 0.90;
+      final scale =
+          excess <= 0 ? 1.0 : (0.90 + 0.10 * excess / (0.10 + excess)) / peak;
+      for (int ch = 0; ch < 2; ch++) {
+        data.setInt16(i * frameBytes + ch * 2,
+            (samples[i * 2 + ch] * scale * 32767).round(), Endian.little);
+      }
+    }
+    position += n;
+    return Uint8List.sublistView(scratch, 0, n * frameBytes);
+  }
+
+  void close() {
+    for (final source in inputs) {
+      source.file.closeSync();
+    }
+    inputs.clear();
+  }
+}
+
 void renderMix(String assets, Mix mix, String destination) {
   final frames = mix.end;
   if (frames < 1) throw const FormatException('Add a clip before rendering.');
   if (frames * frameBytes > 0xffffffff - 36) {
     throw const FormatException('This mix exceeds the 4 GB stereo WAV limit.');
   }
-  final inputs = <_Source>[];
+  final reader = MixReader(assets, mix, 0);
   final partial = File('$destination.part');
-  final sink = partial.openSync(mode: FileMode.write);
   try {
-    for (final clip in mix.clips.where((c) => !c.muted)) {
-      final file = File('$assets/${clip.source}').openSync();
-      inputs.add(_Source(clip, file));
-      if (file.lengthSync() < (clip.trim + clip.length) * frameBytes) {
-        throw FormatException('Missing samples in "${clip.name}".');
+    final sink = partial.openSync(mode: FileMode.write);
+    try {
+      sink.writeFromSync(_header(frames));
+      while (reader.position < reader.end) {
+        sink.writeFromSync(reader.read(_block));
       }
-      file.setPositionSync(clip.trim * frameBytes);
-    }
-    sink.writeFromSync(_header(frames));
-    final scratch = Uint8List(_block * frameBytes);
-    final data = ByteData.sublistView(scratch);
-    final samples = Float64List(_block * 2);
-    for (int pos = 0; pos < frames; pos += _block) {
-      final n = math.min(_block, frames - pos);
-      samples.fillRange(0, n * 2, 0);
-      for (final input in inputs) {
-        final clip = input.clip;
-        final first = math.max(pos, clip.start);
-        final last = math.min(pos + n, clip.end);
-        if (first >= last) continue;
-        final bytes = (last - first) * frameBytes;
-        if (input.file.readIntoSync(scratch, 0, bytes) != bytes) {
-          throw FileSystemException('Audio file ended early', clip.name);
-        }
-        for (int i = 0; i < last - first; i++) {
-          final frame = first + i;
-          final ramp = math.min(
-              1.0, math.min(frame - clip.start, clip.end - frame - 1) / 128);
-          for (int ch = 0; ch < 2; ch++) {
-            final x =
-                data.getInt16(i * frameBytes + ch * 2, Endian.little) / 32768;
-            samples[(frame - pos) * 2 + ch] +=
-                input.adjust(x, ch) * input.gain * ramp;
-          }
-        }
-      }
-      for (int i = 0; i < n; i++) {
-        // Apply one soft overload gain to both channels, preserving stereo balance.
-        final peak = math.max(samples[i * 2].abs(), samples[i * 2 + 1].abs());
-        final excess = peak - 0.90;
-        final scale =
-            excess <= 0 ? 1.0 : (0.90 + 0.10 * excess / (0.10 + excess)) / peak;
-        for (int ch = 0; ch < 2; ch++) {
-          data.setInt16(i * frameBytes + ch * 2,
-              (samples[i * 2 + ch] * scale * 32767).round(), Endian.little);
-        }
-      }
-      sink.writeFromSync(scratch, 0, n * frameBytes);
+    } finally {
+      sink.closeSync();
     }
   } finally {
-    for (final source in inputs) {
-      source.file.closeSync();
-    }
-    sink.closeSync();
+    reader.close();
   }
   partial.renameSync(destination);
 }

@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'clip_editor.dart';
@@ -69,7 +68,6 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
   final engine = Studio();
   ExportSettings exportSettings = const ExportSettings(ExportFormat.wav);
   Timer? timer;
-  StreamSubscription<PlayerState>? playerUpdates;
   StreamSubscription<dynamic>? interruptions, unplug;
   String? selected, failure, busy;
   bool suspendAfterWork = false;
@@ -87,16 +85,9 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
     try {
       await engine.init();
       selected = engine.mix.clips.firstOrNull?.id;
-      playerUpdates = engine.player.playerStateStream.listen((state) {
-        if (!mounted) return;
-        if (state.processingState == ProcessingState.completed &&
-            state.playing &&
-            !engine.recording) {
-          engine.cursor = engine.mix.end;
-          unawaited(engine.player.pause());
-        }
-        setState(() {});
-      });
+      engine.onTransportChanged = () {
+        if (mounted) setState(() {});
+      };
       interruptions = engine.session.interruptionEventStream.listen((event) {
         if (event.begin) _suspend();
       });
@@ -138,7 +129,7 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
-    playerUpdates?.cancel();
+    engine.onTransportChanged = null;
     interruptions?.cancel();
     unplug?.cancel();
     unawaited(engine.dispose());
@@ -165,7 +156,8 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() => busy = null);
         if (suspendAfterWork ||
-            WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.paused) {
           suspendAfterWork = false;
           _suspend();
         }
@@ -245,7 +237,6 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
       });
 
   void _rename() => _run('Renaming session', () async {
-        await engine.pause();
         if (!mounted) return;
         final name = await _name('Rename session', engine.mix.name);
         if (name == null) return;
@@ -288,13 +279,16 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
       });
 
   void _edit(Clip selectedClip) => _run('Editing clip', () async {
-        await engine.pause();
         if (!mounted) return;
         final changed = await showModalBottomSheet<Clip>(
             context: context,
             isScrollControlled: true,
-            builder: (_) => ClipEditor(original: selectedClip));
-        if (changed == null) return;
+            builder: (_) => ClipEditor(
+                original: selectedClip, onAudition: engine.audition));
+        if (changed == null) {
+          engine.audition(null);
+          return;
+        }
         engine.mix
                 .clips[engine.mix.clips.indexWhere((c) => c.id == changed.id)] =
             changed;
@@ -303,7 +297,6 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
       });
 
   void _clipAction(String action, Clip c) => _run('Updating clip', () async {
-        await engine.pause();
         if (action == 'mute') {
           c.muted = !c.muted;
         } else if (action == 'copy') {
@@ -331,7 +324,7 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                             child: const Text('Remove'))
                       ]));
           if (confirmed != true) return;
-          engine.mix.clips.remove(c);
+          engine.mix.removeLayer(c);
           selected = engine.mix.clips.firstOrNull?.id;
         }
         engine.cursor = engine.cursor.clamp(0, engine.mix.end);
@@ -349,8 +342,11 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
   void _export() => _run('Preparing export', () async {
         await engine.pause();
         if (!mounted) return;
-        final settings = await showModalBottomSheet<ExportSettings>(context: context,
-          isScrollControlled: true, builder: (_) => ExportSheet(initial: exportSettings, frames: engine.mix.end));
+        final settings = await showModalBottomSheet<ExportSettings>(
+            context: context,
+            isScrollControlled: true,
+            builder: (_) =>
+                ExportSheet(initial: exportSettings, frames: engine.mix.end));
         if (settings == null || !mounted) return;
         setState(() {
           exportSettings = settings;
@@ -585,14 +581,37 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                                   onRecord: _record,
                                   onSeek: (n) =>
                                       _run('Seeking', () => engine.seek(n)),
+                                  onDragPreview: (c, n) {
+                                    if (engine.playing)
+                                      engine.audition(n == null
+                                          ? null
+                                          : Clip.fromJson(
+                                              {...c.toJson(), 'start': n}));
+                                  },
                                   onMove: (c, n) =>
                                       _run('Moving clip', () async {
-                                        await engine.pause();
                                         c.start = n;
                                         engine.cursor = engine.cursor
                                             .clamp(0, engine.mix.end);
                                         await engine.save();
                                       })),
+                              if (engine.mix.removed.isNotEmpty)
+                                Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: TextButton.icon(
+                                        onPressed: editable
+                                            ? () => _run('Restoring layer',
+                                                    () async {
+                                                  selected = engine.mix
+                                                      .restoreLayer()
+                                                      .id;
+                                                  await engine.save();
+                                                })
+                                            : null,
+                                        icon: const Icon(Icons.undo_rounded,
+                                            size: 17),
+                                        label:
+                                            const Text('Undo layer removal'))),
                               if (clip case final c?) ...[
                                 const SizedBox(height: 20),
                                 const Text('Selected clip',

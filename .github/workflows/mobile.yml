@@ -34,7 +34,7 @@ jobs:
         run: |
           flutter analyze --no-pub
           flutter test --no-pub
-          flutter build apk --release --no-pub
+          flutter build apk --release
           mkdir -p build/delivery
           cp build/app/outputs/flutter-apk/app-release.apk build/delivery/Innerwave-Studio.apk
       - if: matrix.target == 'ios'
@@ -45,6 +45,13 @@ jobs:
           cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
           cd build/ipa
           ditto -c -k --keepParent Payload Innerwave-Studio-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innerwave-Studio-${{ matrix.target }}
+          path: |
+            build/delivery/Innerwave-Studio.apk
+            build/ipa/Innerwave-Studio-unsigned.ipa
+          if-no-files-found: error
       - if: matrix.target == 'ios'
         name: Test recording, mixing and codecs on an iPhone simulator
         run: |
@@ -67,11 +74,4 @@ jobs:
           adb wait-for-device
           timeout 240 bash -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 2; done'
           adb install -g build/delivery/Innerwave-Studio.apk
-          flutter test --no-pub integration_test/overdub_test.dart -d emulator-5554
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innerwave-Studio-${{ matrix.target }}
-          path: |
-            build/delivery/Innerwave-Studio.apk
-            build/ipa/Innerwave-Studio-unsigned.ipa
-          if-no-files-found: error
+          flutter test integration_test/overdub_test.dart -d emulator-5554

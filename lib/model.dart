@@ -87,21 +87,43 @@ class Mix {
   final String id;
   String name;
   final List<Clip> clips;
+  final List<(int, Clip)> removed = [];
+
+  void removeLayer(Clip clip) {
+    final index = clips.indexWhere((c) => c.id == clip.id);
+    if (index >= 0) removed.add((index, clips.removeAt(index)));
+  }
+
+  Clip restoreLayer() {
+    final (index, clip) = removed.removeLast();
+    clips.insert(index.clamp(0, clips.length), clip);
+    return clip;
+  }
+
   int get end => clips.fold(0, (last, clip) => math.max(last, clip.end));
   Map<String, dynamic> toJson() => {
         'version': 1,
         'id': id,
         'name': name,
         'clips': clips.map((clip) => clip.toJson()).toList(),
+        if (removed.isNotEmpty)
+          'removed': [
+            for (final (index, clip) in removed)
+              {'index': index, 'clip': clip.toJson()},
+          ],
       };
   factory Mix.fromJson(Map<String, dynamic> map) {
     if (map['version'] != 1)
       throw const FormatException('Unknown session version.');
-    return Mix(
+    final mix = Mix(
         map['id'],
         map['name'],
         (map['clips'] as List)
             .map((clip) => Clip.fromJson(clip as Map<String, dynamic>))
             .toList());
+    for (final item in map['removed'] as List? ?? []) {
+      mix.removed.add((item['index'] as int, Clip.fromJson(item['clip'])));
+    }
+    return mix;
   }
 }

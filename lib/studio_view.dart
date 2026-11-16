@@ -161,6 +161,7 @@ class Arrangement extends StatelessWidget {
       required this.onSelect,
       required this.onSeek,
       required this.onMove,
+      this.onDragPreview,
       required this.onRecord,
       required this.enabled});
   final Mix mix;
@@ -169,6 +170,7 @@ class Arrangement extends StatelessWidget {
   final void Function(Clip) onSelect;
   final void Function(int) onSeek;
   final void Function(Clip, int) onMove;
+  final void Function(Clip, int?)? onDragPreview;
   final VoidCallback onRecord;
   final bool enabled;
 
@@ -245,6 +247,7 @@ class Arrangement extends StatelessWidget {
                           enabled: enabled,
                           onSelect: () => onSelect(clip),
                           onMove: (n) => onMove(clip, n),
+                          onDragPreview: (n) => onDragPreview?.call(clip, n),
                           onSeek: (x) => onSeek(frame(x))),
                     if (showVoice)
                       Container(
@@ -309,6 +312,7 @@ class _Track extends StatefulWidget {
       required this.enabled,
       required this.onSelect,
       required this.onMove,
+      required this.onDragPreview,
       required this.onSeek});
   final Clip clip;
   final double gutter, width;
@@ -316,6 +320,7 @@ class _Track extends StatefulWidget {
   final bool active, enabled;
   final VoidCallback onSelect;
   final ValueChanged<int> onMove;
+  final ValueChanged<int?> onDragPreview;
   final ValueChanged<double> onSeek;
   @override
   State<_Track> createState() => _TrackState();
@@ -388,11 +393,16 @@ class _TrackState extends State<_Track> {
                               }
                             : null,
                         onHorizontalDragUpdate: w.enabled
-                            ? (d) => setState(
-                                () => delta = (delta ?? 0) + d.delta.dx)
+                            ? (d) {
+                                setState(
+                                    () => delta = (delta ?? 0) + d.delta.dx);
+                                w.onDragPreview(start);
+                              }
                             : null,
-                        onHorizontalDragCancel: () =>
-                            setState(() => delta = null),
+                        onHorizontalDragCancel: () {
+                          setState(() => delta = null);
+                          w.onDragPreview(null);
+                        },
                         onHorizontalDragEnd: w.enabled
                             ? (_) {
                                 final value = start;

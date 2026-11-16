@@ -12,7 +12,6 @@ dependencies:
   audio_session: 0.2.2
   ffmpeg_kit_flutter_new_audio: 2.5.8
   file_picker: 10.3.10
-  just_audio: 0.10.5
   path_provider: 2.1.5
   # Keep the platform-plugin implementations while the native-assets compiler
   # cannot quote this Windows workspace's SDK path during flutter test.

@@ -3,8 +3,9 @@ import 'model.dart';
 import 'studio_view.dart';
 
 class ClipEditor extends StatefulWidget {
-  const ClipEditor({super.key, required this.original});
+  const ClipEditor({super.key, required this.original, this.onAudition});
   final Clip original;
+  final ValueChanged<Clip>? onAudition;
   @override
   State<ClipEditor> createState() => _ClipEditorState();
 }
@@ -60,10 +61,22 @@ class _ClipEditorState extends State<ClipEditor> {
     setState(() => error = message);
   }
 
+  void _audition() {
+    if (widget.onAudition == null) return;
+    final a = _frame(start), b = _frame(trim), d = _frame(end);
+    if (a == null || b == null || d == null || d <= b || d > clip.frames)
+      return;
+    clip.start = a;
+    clip.trim = b;
+    clip.length = d - b;
+    widget.onAudition!(clip);
+  }
+
   Widget _field(String title, TextEditingController controller,
           {bool numeric = true}) =>
       TextField(
           controller: controller,
+          onChanged: numeric ? (_) => _audition() : null,
           maxLength: numeric ? null : 120,
           keyboardType: numeric
               ? const TextInputType.numberWithOptions(decimal: true)
@@ -90,7 +103,10 @@ class _ClipEditorState extends State<ClipEditor> {
             divisions: ((max - min) * 2).round(),
             value: value,
             activeColor: tone(clip.type),
-            onChanged: (v) => setState(() => set(v))),
+            onChanged: (v) {
+              setState(() => set(v));
+              _audition();
+            }),
       ]);
 
   @override

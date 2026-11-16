@@ -6,13 +6,13 @@ import 'dart:math' as math;
 import 'package:audio_session/audio_session.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import 'audio.dart';
 import 'audio_codecs.dart';
 import 'model.dart';
+import 'preview.dart';
 
 void _render((String, Mix, String) args) =>
     renderMix(args.$1, args.$2, args.$3);
@@ -41,7 +41,14 @@ Mix _seed((String, String) args) {
 }
 
 class Studio {
-  final player = AudioPlayer(handleInterruptions: false);
+  late final preview = Preview(
+      onPosition: _alignTake,
+      onStopped: (frame) {
+        cursor = frame;
+        onTransportChanged?.call();
+      },
+      onError: (e) => playbackError = 'Playback stopped. $e');
+  void Function()? onTransportChanged;
   final recorder = AudioRecorder();
   late Directory root, cache;
   late Mix mix;
@@ -50,31 +57,27 @@ class Studio {
   final _takeClock = Stopwatch();
   int _takeStart = 0, _leadFrames = 0;
   bool _timedTake = false;
-  File? _preview;
-  String? _loaded;
+  File? _exportRender;
   bool initialized = false;
   String? playbackError;
   late AudioSession session;
   String get assets => '${root.path}/audio';
   Directory get sessions => Directory('${root.path}/sessions');
-  bool get playing =>
-      player.playing && player.processingState != ProcessingState.completed;
+  bool get playing => preview.playing;
+  void _alignTake(int shown) {
+    if (!recording || _timedTake || shown <= _takeStart) return;
+    final elapsed = _takeClock.elapsedMicroseconds * sampleRate ~/ 1000000;
+    _leadFrames = (elapsed - (shown - _takeStart)).clamp(0, elapsed);
+    _timedTake = true;
+  }
+
   int get liveFrame {
     if (recording) {
-      final elapsed = (_takeClock.elapsedMicroseconds * sampleRate) ~/ 1000000;
-      if (!_timedTake &&
-          player.position.inMicroseconds >
-              durationAt(_takeStart).inMicroseconds) {
-        final delta =
-            frameAt(player.position.inMicroseconds / 1e6) - _takeStart;
-        _leadFrames = (elapsed - delta).clamp(0, elapsed);
-        _timedTake = true;
-      }
+      if (!_timedTake) return _takeStart;
+      final elapsed = _takeClock.elapsedMicroseconds * sampleRate ~/ 1000000;
       return _takeStart + math.max(0, elapsed - _leadFrames);
     }
-    if (playing)
-      return frameAt(player.position.inMicroseconds / 1e6).clamp(0, mix.end);
-    return cursor;
+    return playing ? preview.frame : cursor;
   }
 
   static Duration durationAt(int frame) =>
@@ -124,23 +127,35 @@ class Studio {
   }
 
   Future<void> _invalidate() async {
-    if (_loaded != null) await player.stop();
-    _loaded = null;
-    final previous = _preview;
-    _preview = null;
+    final previous = _exportRender;
+    _exportRender = null;
     if (previous != null && await previous.exists()) await previous.delete();
   }
 
   Future<void> save() async {
+    preview.revise(mix);
+    await _invalidate();
     final path = '${sessions.path}/${mix.id}.json';
     final pending = File('$path.tmp');
     await pending.writeAsString(jsonEncode(mix.toJson()), flush: true);
     await pending.rename(path);
-    await _invalidate();
+  }
+
+  /// Audition a draft in the running transport without committing source edits.
+  void audition(Clip? draft) {
+    if (!playing) return;
+    if (draft == null) {
+      preview.revise(mix);
+      return;
+    }
+    preview.revise(Mix(mix.id, mix.name, [
+      for (final clip in mix.clips) clip.id == draft.id ? draft : clip,
+    ]));
   }
 
   Future<void> open(String id) async {
     final data = await File('${sessions.path}/$id.json').readAsString();
+    await pause();
     mix = Mix.fromJson(jsonDecode(data));
     cursor = 0;
     await _invalidate();
@@ -148,6 +163,7 @@ class Studio {
   }
 
   Future<void> create(String name) async {
+    await pause();
     mix = Mix(makeId(), name, []);
     cursor = 0;
     await save();
@@ -155,7 +171,8 @@ class Studio {
   }
 
   Future<File> rendered() async {
-    if (_preview != null && await _preview!.exists()) return _preview!;
+    if (_exportRender != null && await _exportRender!.exists())
+      return _exportRender!;
     final file = File('${cache.path}/mix-${makeId()}.wav');
     try {
       await compute(_render, (assets, mix, file.path));
@@ -164,48 +181,34 @@ class Studio {
       if (await partial.exists()) await partial.delete();
       rethrow;
     }
-    _preview = file;
+    _exportRender = file;
     return file;
   }
 
   Future<File> exportMix(ExportSettings settings) async {
     final mixdown = await rendered();
-    final dir = await Directory('${cache.path}/exports/${mix.id}').create(recursive: true);
+    final dir = await Directory('${cache.path}/exports/${mix.id}')
+        .create(recursive: true);
     final file = File('${dir.path}/${settings.fileName(mix.name)}');
     return writeExport(mixdown, file, settings);
-  }
-
-  Future<void> _cue(int frame) async {
-    final audio = await rendered();
-    if (_loaded != audio.path) {
-      await player.setFilePath(audio.path);
-      _loaded = audio.path;
-    }
-    await player.seek(durationAt(frame));
-  }
-
-  void _play() {
-    unawaited(player.play().catchError((Object e) {
-      playbackError = 'Playback stopped. $e';
-    }));
   }
 
   Future<void> play() async {
     if (mix.end == 0)
       throw const FormatException('Add a layer to play this session.');
     if (cursor >= mix.end) cursor = 0;
-    await _cue(cursor);
-    _play();
+    if (!await session.setActive(true))
+      throw const FormatException('Audio output is busy. Try again.');
+    await preview.play(assets, mix, cursor);
   }
 
   Future<void> pause() async {
-    if (playing) cursor = liveFrame;
-    await player.pause();
+    if (playing) cursor = await preview.pause();
   }
 
   Future<void> seek(int frame) async {
     cursor = frame.clamp(0, mix.end);
-    if (_loaded != null) await player.seek(durationAt(cursor));
+    if (playing) await preview.play(assets, mix, cursor);
   }
 
   Future<Clip> _import(
@@ -265,7 +268,6 @@ class Studio {
     }
     _takeStart = cursor;
     final hasBed = cursor < mix.end;
-    if (hasBed) await _cue(cursor);
     const attrs = AndroidAudioAttributes(
         contentType: AndroidAudioContentType.music,
         usage: AndroidAudioUsage.media);
@@ -299,8 +301,14 @@ class Studio {
       _timedTake = !hasBed;
       _leadFrames = 0;
       recording = true;
-      if (hasBed) _play();
+      if (hasBed) await preview.play(assets, mix, cursor);
     } catch (_) {
+      if (recording) {
+        recording = false;
+        _takeClock.stop();
+        await recorder.cancel();
+        await preview.pause();
+      }
       await session.configure(const AudioSessionConfiguration.music());
       rethrow;
     }
@@ -310,7 +318,7 @@ class Studio {
     _takeClock.stop();
     recording = false;
     final path = await recorder.stop();
-    await player.pause();
+    await preview.pause();
     await session.configure(const AudioSessionConfiguration.music());
     if (path == null)
       throw const FormatException('The microphone returned no recording.');
@@ -327,7 +335,7 @@ class Studio {
   }
 
   Future<void> dispose() async {
-    await player.dispose();
+    await preview.dispose();
     await recorder.dispose();
   }
 }

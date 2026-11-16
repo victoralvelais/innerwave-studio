@@ -5,11 +5,11 @@ A Flutter stereo audio editor for iPhone and Android. Arrange binaural audio, AS
 ## Make a first mix
 
 1. Open **Night Current** and press **Play**. The original 24-second starter has a 180 Hz tone on the left, 186 Hz on the right, and a synthesized rain layer entering at two seconds. Use stereo headphones to hear the separate channels.
-2. Tap the time ruler to set the playhead. Choose **Add layer** and select **Binaural beat**, **ASMR texture** or **Prerecorded affirmation** to place an audio file there. WAV, MP3 and M4A/AAC are common choices. Additional formats depend on the device's decoder.
+2. Tap the time ruler to set the playhead. Choose **Add layer** and select **Binaural beat**, **ASMR texture** or **Prerecorded affirmation** to place an audio file there. You can import WAV, MP3, M4A/AAC, AIFF, FLAC and Ogg audio, including Vorbis and Opus.
 3. Tap **Record**, grant microphone access, and speak while the backing mix plays from the playhead. **Stop** adds the take at its starting position. Recording can continue beyond the backing mix. Headphones keep the backing out of the microphone. Wired headphones make alignment easier when monitoring a take.
-4. Drag a clip sideways to move it. Select it and choose **Edit clip** for exact start time, source in/out points and level. Voice clips also have **Warmth** and **Presence** controls. Apply a change and replay a short phrase to match your voice preference by ear.
-5. Use the selected clip's speaker button to mute it. Its menu can duplicate the clip after itself or remove it. Tap the session name to rename it. The folder button opens previous sessions or creates an empty one. Edits save on the device as you apply them.
-6. Choose **Export WAV** to send the mix to Files or another app. The file uses the same 44.1 kHz, 16-bit stereo render as playback. Long edits can take time to render on first play. Subsequent playback reuses the render until the mix changes.
+4. Drag a clip sideways to move it. Select it and choose **Edit clip** for exact start time, source in/out points and level. Voice clips also have **Warmth** and **Presence** controls. While playback is running, drag a clip or audition the controls in the inspector. Apply keeps your changes. Dismissing the inspector restores the previous settings.
+5. Use the selected clip's speaker button to mute it. Its menu can duplicate the clip after itself or remove it. Undo layer removal restores its audio, timing, position and voice settings, including after reopening the session. Tap the session name to rename it. The folder button opens previous sessions or creates an empty one. Edits save on the device as you apply them.
+6. Choose **Export** and select **WAV**, **MP3**, **AAC** or **Ogg Vorbis**. WAV preserves the 16-bit PCM mix. The compressed formats offer 192, 256 and 320 kbps targets, with 320 kbps preselected. AAC-LC uses an M4A container. Preview and export use the same 44.1 kHz stereo mixing code. Tap the export button in the sheet, then choose Files or another destination. Playback reads a short buffer of active source audio at the playhead. Export renders the full arrangement into a shareable file.
 
 ## Run
 
@@ -21,7 +21,7 @@ flutter devices
 flutter run -d DEVICE_ID
 ```
 
-Use a physical phone and headphones for microphone, hardware latency and listening checks. In Xcode select your development team for a signed physical iPhone build. The GitHub Actions workflow builds a debug APK and an unsigned iPhone archive. The iPhone archive needs compatible signing or a compatible sideload environment.
+Use a physical phone and headphones for microphone, hardware latency and listening checks. In Xcode select your development team for a signed physical iPhone build. The GitHub Actions workflow builds a release-mode APK signed with the prototype debug key and an unsigned iPhone archive. The iPhone archive needs compatible signing or a compatible sideload environment.
 
 ## Verification and handoff
 
@@ -31,10 +31,12 @@ flutter test --no-pub
 ```
 
 - `lib/model.dart` defines the session manifest. Start, trim and length use stereo sample frames. Manifest writes use a temporary sibling and rename on completion.
-- `lib/studio.dart` owns the session library, recording, render cache, imports and playback. Native channel `innerwave/audio` decodes imported or recorded audio using AVFoundation on iOS and MediaCodec on Android, writing interleaved stereo PCM on disk. Under the documents directory, `innerwave/sessions` holds editable manifests and `innerwave/audio` holds source files. Device-level backup behavior depends on platform settings.
+- `lib/studio.dart` owns the session library, recording, render cache, imports and playback. Under the documents directory, `innerwave/sessions` holds editable manifests and `innerwave/audio` holds source files. Device-level backup behavior depends on platform settings.
+- `lib/preview.dart` streams small stereo blocks from a mixer isolate to Android AudioTrack or iOS AVAudioPlayerNode. The device playback counter drives the playhead. Moving or trimming clips updates the arrangement, and seeking can start anywhere without rendering earlier audio.
+- `lib/audio_codecs.dart` loads the pinned FFmpegKit audio plugin bundled with each phone build. Imports decode the first audio stream to interleaved stereo PCM. Compressed exports encode the completed WAV with LAME MP3, AAC-LC or libvorbis and appear at the final path after encoding succeeds. All processing runs on-device. Flutter resolves the Dart package from the lockfile. Gradle and Xcode fetch the native audio libraries when building the app. [Audio plugin, included codecs and license](https://pub.dev/packages/ffmpeg_kit_flutter_new_audio/versions/2.5.8)
 - `lib/audio.dart` generates the original demo and renders the arrangement in bounded blocks on a background isolate. It preserves stereo, applies trim and level, and applies low/high tone shaping to voice clips. A channel-linked soft knee handles peaks above 0.90 full scale. An hour of stereo PCM at the project rate takes about 635 MB before temporary renders and exports.
 - `lib/main.dart`, `lib/studio_view.dart` and `lib/clip_editor.dart` implement the phone editor. The waveform display derives from peak measurements of each source.
-- Tests cover stereo carrier separation, frame placement, overlapping clips across render blocks, mute and gain, voice filtering, timeline gestures and trim validation. Check actual playback/record alignment on each target phone and headphone route before tuning latency compensation.
+- Tests cover stereo carrier separation, frame placement, overlapping clips across render blocks, mute and gain, voice filtering, timeline gestures, trim validation, export selection and export file handling. Check actual playback/record alignment on each target phone and headphone route before tuning latency compensation.
 
 ## Later milestone — optional arrangement suggestions
 

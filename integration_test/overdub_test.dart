@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ffmpeg_kit_flutter_new_audio/ffprobe_kit.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:innerwave_studio/audio_codecs.dart';
 import 'package:innerwave_studio/model.dart';
@@ -33,17 +34,46 @@ void main() {
     final session = studio.mix.id;
     final before = studio.mix.clips.length;
     final at = frameAt(3);
+    final texture =
+        studio.mix.clips.firstWhere((c) => c.type == LayerType.texture);
+    final source = File('${studio.assets}/${texture.source}');
+    final sourceBefore = await source.readAsBytes();
+    final originalStart = texture.start;
+    await studio.seek(at);
+    await studio.play();
+    final playDeadline = DateTime.now().add(const Duration(seconds: 10));
+    while (studio.liveFrame < at + frameAt(.25) &&
+        DateTime.now().isBefore(playDeadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    expect(studio.liveFrame, greaterThan(at));
+    texture.start = frameAt(5);
+    await studio.save();
+    expect(studio.playing, isTrue);
+    await studio.seek(frameAt(7));
+    expect(studio.playing, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    await studio.pause();
+    expect(studio.cursor, greaterThanOrEqualTo(frameAt(7)));
+    await studio.open(session);
+    final reopened = studio.mix.clips.firstWhere((c) => c.id == texture.id);
+    expect(reopened.start, frameAt(5));
+    expect(listEquals(await source.readAsBytes(), sourceBefore), isTrue);
+    expect(
+        await studio.cache.list().any((f) => f.path.endsWith('.wav')), isFalse,
+        reason:
+            'Live playback and edits must work before any WAV is rendered.');
+    reopened.start = originalStart;
+    await studio.save();
     await studio.seek(at);
     await studio.record();
     expect(studio.recording, isTrue);
     final deadline = DateTime.now().add(const Duration(seconds: 10));
-    while (studio.player.position < Studio.durationAt(at + frameAt(.5)) &&
+    while (studio.liveFrame < at + frameAt(.5) &&
         DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
-      // The editor polls this value to align the take to the playback clock.
-      studio.liveFrame;
     }
-    expect(studio.player.position, greaterThan(Studio.durationAt(at)));
+    expect(studio.liveFrame, greaterThan(at));
     await Future<void>.delayed(const Duration(milliseconds: 600));
     await studio.finishTake();
     expect(studio.recording, isFalse);
@@ -92,7 +122,8 @@ void main() {
       expect(stream.getNumberProperty('channels'), 2);
       if (entry.key == ExportFormat.mp3) expect(stream.getBitrate(), '320000');
       if (entry.key == ExportFormat.aac)
-        expect(stream.getStringProperty('profile'), 'LC');
+        // FFprobe's small build reports the AV_PROFILE_AAC_LOW numeric ID.
+        expect(stream.getProperty('profile').toString(), isIn(['LC', '1']));
       if (entry.key == ExportFormat.vorbis)
         expect(stream.getBitrate(), '320000');
       final length = await decodeToPcm(file, output);

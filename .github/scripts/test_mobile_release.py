@@ -1,6 +1,11 @@
 import hashlib
+import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
-from mobile_release import SUMS, check_published, filenames, pubspec, select, stage_notes, sums_bytes
+from unittest.mock import patch
+from mobile_release import SUMS, check_published, filenames, pubspec, select, stage_notes, sums_bytes, update_draft, upload_asset
 
 
 SHA = "1" * 40
@@ -19,6 +24,41 @@ def asset(name, data):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_draft_note_update_and_publication_preserve_reserved_tag_and_commit(self):
+        tag = "v0.1.2"
+        for fields in [("-f", "body=verified"), ("-F", "draft=false", "-f", "make_latest=true")]:
+            with self.subTest(fields=fields):
+                with patch("mobile_release.api", return_value={"tag_name": tag, "target_commitish": SHA}) as api:
+                    update_draft("owner/repo", "releases/941", tag, SHA, *fields)
+                    api.assert_called_once_with("owner/repo", "releases/941", "-X", "PATCH",
+                        "-f", f"tag_name={tag}", "-f", f"target_commitish={SHA}", *fields)
+        with patch("mobile_release.api", return_value={"tag_name": "untagged-deadbeef", "target_commitish": SHA}):
+            with self.assertRaisesRegex(ValueError, "changed the reserved tag"):
+                update_draft("owner/repo", "releases/941", tag, SHA, "-f", "body=verified")
+
+    def test_draft_upload_streams_to_release_id_and_checks_returned_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Innerwave-Studio-v0.1.2.apk"
+            data = b"already verified apk"
+            path.write_bytes(data)
+            result = asset(path.name, data)
+
+            def accept(request, timeout):
+                self.assertEqual(request.full_url,
+                    "https://uploads.github.com/repos/owner/repo/releases/941/assets?name=" + path.name)
+                self.assertEqual(request.get_method(), "POST")
+                self.assertEqual(request.get_header("Content-length"), str(len(data)))
+                self.assertEqual(request.get_header("Authorization"), "Bearer fixture-token")
+                self.assertEqual(request.data.read(), data)
+                response = io.BytesIO(json.dumps(result).encode())
+                response.status = 201
+                return response
+
+            with patch.dict("os.environ", {"GH_TOKEN": "fixture-token"}), patch("mobile_release.urlopen", accept):
+                self.assertEqual(upload_asset("owner/repo", 941, path, result["digest"]), result)
+                with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                    upload_asset("owner/repo", 941, path, "sha256:" + "0" * 64)
+
     def test_floor_and_patch_after_all_reserved_or_tagged_versions(self):
         self.assertEqual(select(SPEC, [], {}, SHA, 2, 101), ("v0.1.0", 4, None))
         other = reserved("v0.1.2", OTHER, 20)

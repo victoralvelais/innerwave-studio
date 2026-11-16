@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 import zipfile
 
 
@@ -66,6 +68,15 @@ def api(repo, path, *args):
     return json.loads(gh("api", f"repos/{repo}/{path}", *args))
 
 
+def update_draft(repo, release_path, tag, sha, *fields):
+    # GitHub may assign an untagged-* name to a draft when PATCH omits its tag.
+    release = api(repo, release_path, "-X", "PATCH", "-f", f"tag_name={tag}",
+                  "-f", f"target_commitish={sha}", *fields)
+    if release.get("tag_name") != tag or release.get("target_commitish") != sha:
+        raise ValueError("GitHub changed the reserved tag or commit while updating the draft.")
+    return release
+
+
 def listing(repo, resource):
     pages = api(repo, resource + "?per_page=100", "--paginate", "--slurp")
     return [item for page in pages for item in page]
@@ -98,6 +109,25 @@ def check_published(release, tags, sha):
 def local_digest(path):
     with path.open("rb") as handle:
         return "sha256:" + hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def upload_asset(repo, release_id, path, expected):
+    endpoint = f"https://uploads.github.com/repos/{repo}/releases/{int(release_id)}/assets"
+    size = path.stat().st_size
+    headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+               "Accept": "application/vnd.github+json", "Content-Type": "application/octet-stream",
+               "Content-Length": str(size), "User-Agent": "Innerwave-release-publisher"}
+    with path.open("rb") as stream:
+        request = Request(endpoint + "?" + urlencode({"name": path.name}), data=stream,
+                          method="POST", headers=headers)
+        with urlopen(request, timeout=600) as response:
+            if response.status != 201:
+                raise ValueError(f"Unexpected upload response {response.status} for {path.name}.")
+            asset = json.load(response)
+    if (asset.get("name") != path.name or asset.get("state") != "uploaded"
+            or asset.get("size") != size or asset.get("digest") != expected):
+        raise ValueError(f"Remote size, name, state or digest mismatch after upload of {path.name}.")
+    return asset
 
 
 def stage_notes(tag, body, assets, verified):
@@ -164,7 +194,7 @@ def main():
     verified = {name: local_digest(folder / name) for name in names}
     body = stage_notes(tag, release["body"], assets, verified)
     if body != release["body"]:
-        api(repo, release_path, "-X", "PATCH", "-f", f"body={body}")
+        update_draft(repo, release_path, tag, sha, "-f", f"body={body}")
     for name in [*names, SUMS]:
         path = folder / name
         if name == SUMS:
@@ -180,12 +210,8 @@ def main():
             # Finished packages already landed in this exact commit/build's draft
             # after both test jobs passed. Preserve those bytes across rebuilds.
             continue
-        gh("release", "upload", tag, str(path), "--repo", repo)
-        uploaded = api(repo, release_path)
-        assets = {a["name"]: a for a in uploaded["assets"]}
         expected = verified[name] if name in verified else local_digest(path)
-        if assets[name].get("digest") != expected:
-            raise ValueError(f"Digest mismatch after upload of {name}.")
+        assets[name] = upload_asset(repo, release["id"], path, expected)
     # Recheck both the remote draft and tag immediately before publication.
     draft = api(repo, release_path)
     now = {t["name"]: t["commit"]["sha"] for t in listing(repo, "tags")}
@@ -195,8 +221,8 @@ def main():
     check_published(draft, {tag: sha}, sha)
     latest = max((version_tuple(r["tag_name"]) for r in releases
                   if not r["draft"] and not r["prerelease"]), default=())
-    api(repo, release_path, "-X", "PATCH", "-F", "draft=false",
-        "-f", f"make_latest={str(version_tuple(tag) >= latest).lower()}")
+    update_draft(repo, release_path, tag, sha, "-F", "draft=false",
+                 "-f", f"make_latest={str(version_tuple(tag) >= latest).lower()}")
     published = api(repo, release_path)
     now = {t["name"]: t["commit"]["sha"] for t in listing(repo, "tags")}
     if published["draft"]:

@@ -1,11 +1,26 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter/services.dart';
+import 'package:ffmpeg_kit_flutter_new_audio/ffprobe_kit.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:innerwave_studio/audio_codecs.dart';
 import 'package:innerwave_studio/model.dart';
 import 'package:innerwave_studio/studio.dart';
 import 'package:integration_test/integration_test.dart';
+
+// The first second of the starter mix contains a different tone in each ear.
+double tonePower(ByteData pcm, int channel, int hz) {
+  final coefficient = 2 * math.cos(2 * math.pi * hz / sampleRate);
+  var last = 0.0, prior = 0.0;
+  for (var frame = sampleRate ~/ 2; frame < sampleRate * 3 ~/ 2; frame++) {
+    final x = pcm.getInt16(frame * 4 + channel * 2, Endian.little);
+    final next = x + coefficient * last - prior;
+    prior = last;
+    last = next;
+  }
+  return last * last + prior * prior - coefficient * last * prior;
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -46,13 +61,9 @@ void main() {
     expect(header.getUint32(24, Endian.little), 44100);
     expect(bytes.length, 44 + studio.mix.end * 4);
 
-    // Exercise the same native channel used by the device file picker.
+    // Exercise the same normalizer used for files selected on the phone.
     final output = File('${studio.cache.path}/roundtrip-${makeId()}.pcm');
-    final frames =
-        await const MethodChannel('innerwave/audio').invokeMethod<int>(
-      'decode',
-      {'input': mix.path, 'output': output.path},
-    );
+    final frames = await decodeToPcm(mix, output);
     expect(frames, studio.mix.end);
     final pcm = ByteData.sublistView(await output.readAsBytes());
     expect(pcm.lengthInBytes, bytes.length - 44);
@@ -65,5 +76,33 @@ void main() {
     }
     expect(maxError, lessThanOrEqualTo(4));
     await output.delete();
+
+    final codecs = {
+      ExportFormat.wav: 'pcm_s16le',
+      ExportFormat.mp3: 'mp3',
+      ExportFormat.aac: 'aac',
+      ExportFormat.vorbis: 'vorbis',
+    };
+    for (final entry in codecs.entries) {
+      final file = await studio.exportMix(ExportSettings(entry.key, kbps: 320));
+      final probe = await FFprobeKit.getMediaInformation(file.path);
+      final stream = probe.getMediaInformation()!.getStreams().single;
+      expect(stream.getCodec(), entry.value);
+      expect(stream.getSampleRate(), '44100');
+      expect(stream.getNumberProperty('channels'), 2);
+      if (entry.key == ExportFormat.mp3) expect(stream.getBitrate(), '320000');
+      if (entry.key == ExportFormat.aac)
+        expect(stream.getStringProperty('profile'), 'LC');
+      if (entry.key == ExportFormat.vorbis)
+        expect(stream.getBitrate(), '320000');
+      final length = await decodeToPcm(file, output);
+      expect((length - frames).abs(), lessThanOrEqualTo(2048));
+      final decoded = ByteData.sublistView(await output.readAsBytes());
+      expect(tonePower(decoded, 0, 180),
+          greaterThan(8 * tonePower(decoded, 0, 186)));
+      expect(tonePower(decoded, 1, 186),
+          greaterThan(8 * tonePower(decoded, 1, 180)));
+      await output.delete();
+    }
   });
 }

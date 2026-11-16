@@ -6,12 +6,12 @@ import 'dart:math' as math;
 import 'package:audio_session/audio_session.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import 'audio.dart';
+import 'audio_codecs.dart';
 import 'model.dart';
 
 void _render((String, Mix, String) args) =>
@@ -41,7 +41,6 @@ Mix _seed((String, String) args) {
 }
 
 class Studio {
-  static const _decode = MethodChannel('innerwave/audio');
   final player = AudioPlayer(handleInterruptions: false);
   final recorder = AudioRecorder();
   late Directory root, cache;
@@ -169,6 +168,13 @@ class Studio {
     return file;
   }
 
+  Future<File> exportMix(ExportSettings settings) async {
+    final mixdown = await rendered();
+    final dir = await Directory('${cache.path}/exports/${mix.id}').create(recursive: true);
+    final file = File('${dir.path}/${settings.fileName(mix.name)}');
+    return writeExport(mixdown, file, settings);
+  }
+
   Future<void> _cue(int frame) async {
     final audio = await rendered();
     if (_loaded != audio.path) {
@@ -208,10 +214,7 @@ class Studio {
     final source = '$id.pcm';
     final out = File('$assets/$source');
     try {
-      final frames = await _decode
-          .invokeMethod<int>('decode', {'input': path, 'output': out.path});
-      if (frames == null || frames <= 0)
-        throw const FormatException('This file has no decodable audio.');
+      final frames = await decodeToPcm(File(path), out);
       final peaks = await compute(_peaks, (out.path, frames));
       return Clip(
           id: id,

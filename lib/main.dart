@@ -1,11 +1,12 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'clip_editor.dart';
+import 'audio_codecs.dart';
+import 'export_sheet.dart';
 import 'model.dart';
 import 'studio.dart';
 import 'studio_view.dart';
@@ -66,6 +67,7 @@ class StudioPage extends StatefulWidget {
 
 class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
   final engine = Studio();
+  ExportSettings exportSettings = const ExportSettings(ExportFormat.wav);
   Timer? timer;
   StreamSubscription<PlayerState>? playerUpdates;
   StreamSubscription<dynamic>? interruptions, unplug;
@@ -344,22 +346,22 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
             'Voice take added at ${timeOf(engine.cursor, fraction: true)}.');
       });
 
-  void _export() => _run('Rendering stereo WAV', () async {
+  void _export() => _run('Preparing export', () async {
         await engine.pause();
-        final audio = await engine.rendered();
-        final safe = engine.mix.name
-            .replaceAll(RegExp(r'[^\p{L}\p{N} _.-]', unicode: true), '')
-            .trim();
-        final dir =
-            await Directory('${engine.cache.path}/exports/${engine.mix.id}')
-                .create(recursive: true);
-        final output = await audio
-            .copy('${dir.path}/${safe.isEmpty ? 'Innerwave mix' : safe}.wav');
+        if (!mounted) return;
+        final settings = await showModalBottomSheet<ExportSettings>(context: context,
+          isScrollControlled: true, builder: (_) => ExportSheet(initial: exportSettings, frames: engine.mix.end));
+        if (settings == null || !mounted) return;
+        setState(() {
+          exportSettings = settings;
+          busy = 'Rendering ${settings.format.label}';
+        });
+        final output = await engine.exportMix(settings);
         if (!mounted) return;
         final box = context.findRenderObject() as RenderBox;
         await SharePlus.instance.share(ShareParams(
-            files: [XFile(output.path, mimeType: 'audio/wav')],
-            title: 'Export stereo WAV',
+            files: [XFile(output.path, mimeType: settings.format.mimeType)],
+            title: 'Export stereo ${settings.format.label}',
             sharePositionOrigin: box.localToGlobal(Offset.zero) & box.size));
       });
 
@@ -527,7 +529,7 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                           ? _export
                           : null,
                       icon: const Icon(Icons.ios_share_rounded, size: 16),
-                      label: const Text('Export WAV'))),
+                      label: const Text('Export'))),
             ]),
         bottomNavigationBar: ready ? _transport() : null,
         body: !ready

@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      test_live_sources:
+        description: Also import and play the public YouTube and TikTok sample copies
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,6 +51,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       BUILD: ${{ needs.version.outputs.build }}
+      TEST_LIVE_SOURCES: ${{ (inputs.test_live_sources || contains(github.event.head_commit.message, '[test-live-sources]')) && 'true' || 'false' }}
       APK_PATH: build/delivery/Innerwave-Studio-v${{ needs.version.outputs.version }}.apk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -113,7 +119,7 @@ jobs:
           wait "$boot_pid"
           xcrun simctl install "$device" build/ios/iphonesimulator/Runner.app
           xcrun simctl privacy "$device" grant microphone studio.innerwave.innerwaveStudio
-          flutter test --no-pub integration_test/overdub_test.dart -d "$device"
+          flutter test --no-pub "--dart-define=TEST_LIVE_SOURCES=$TEST_LIVE_SOURCES" integration_test/overdub_test.dart -d "$device"
       - uses: actions/upload-artifact@v4
         with:
           name: Innerwave-Studio-v${{ env.VERSION }}-${{ matrix.target }}

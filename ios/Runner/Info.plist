@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record your voice onto the affirmation track of your mix.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose a saved video to add its audio to the timeline.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

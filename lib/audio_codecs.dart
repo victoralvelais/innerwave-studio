@@ -89,6 +89,10 @@ Future<void> _convert(List<String> args, String failure) async {
   final session = await FFmpegKit.executeWithArguments(args);
   if (ReturnCode.isSuccess(await session.getReturnCode())) return;
   final log = (await session.getOutput())?.trim() ?? '';
+  if (log.contains('matches no streams')) {
+    throw const FormatException(
+        'This file has no audio track. Choose a video with sound.');
+  }
   final detail = log.split('\n').where((s) => s.trim().isNotEmpty).firstOrNull;
   throw FormatException(detail == null ? failure : '$failure\n$detail');
 }
@@ -100,7 +104,7 @@ Future<int> decodeToPcm(File input, File output) async {
     await _convert([
       ..._localInput,
       '-format_whitelist',
-      'wav,mp3,mov,aac,aiff,flac,ogg',
+      'wav,mp3,mov,aac,aiff,flac,ogg,matroska,webm,avi,mpeg,mpegts',
       '-i',
       input.absolute.path,
       ..._stereoStream,
@@ -109,7 +113,7 @@ Future<int> decodeToPcm(File input, File output) async {
       '-f',
       's16le',
       part.absolute.path,
-    ], 'Could not decode this audio file.');
+    ], 'Could not read an audio track from this file.');
     final bytes = await part.length();
     if (bytes < frameBytes || bytes % frameBytes != 0) {
       throw const FormatException('The decoder returned incomplete audio.');

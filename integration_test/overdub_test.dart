@@ -9,6 +9,8 @@ import 'package:innerwave_studio/audio_codecs.dart';
 import 'package:innerwave_studio/model.dart';
 import 'package:innerwave_studio/studio.dart';
 import 'package:integration_test/integration_test.dart';
+import 'video_file_checks.dart';
+import 'discovery_live_test.dart' show registerLiveDiscoveryTest;
 
 // The first second of the starter mix contains a different tone in each ear.
 double tonePower(ByteData pcm, int channel, int hz) {
@@ -136,4 +138,7 @@ void main() {
       await output.delete();
     }
   });
+  registerVideoFileChecks();
+  if (const bool.fromEnvironment('TEST_LIVE_SOURCES'))
+    registerLiveDiscoveryTest();
 }

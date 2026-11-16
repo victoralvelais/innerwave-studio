@@ -11,6 +11,14 @@ A Flutter stereo audio editor for iPhone and Android. Arrange binaural audio, AS
 5. Use the selected clip's speaker button to mute it. Its menu can duplicate the clip after itself or remove it. Undo layer removal restores its audio, timing, position and voice settings, including after reopening the session. Tap the session name to rename it. The folder button opens previous sessions or creates an empty one. Edits save on the device as you apply them.
 6. Choose **Export** and select **WAV**, **MP3**, **AAC** or **Ogg Vorbis**. WAV preserves the 16-bit PCM mix. The compressed formats offer 192, 256 and 320 kbps targets, with 320 kbps preselected. AAC-LC uses an M4A container. Preview and export use the same 44.1 kHz stereo mixing code. Tap the export button in the sheet, then choose Files or another destination. Playback reads a short buffer of active source audio at the playhead. Export renders the full arrangement into a shareable file.
 
+## Discover and import video audio
+
+Open **Discover** at the playhead where you want the clip. Search Wikimedia Commons for a recording or video, choose a result and select its layer. The editor downloads the file, extracts its first audio track into local stereo PCM and keeps the title, source page, creator and available license information with the clip. Select the clip and tap **Source credit** to copy that information. The finished project plays offline.
+
+Paste a YouTube watch, Shorts or share link, or a TikTok post or short share link. Discover looks for Commons videos whose source field credits that exact video ID. A matching file can be imported directly. When no copy is available, open the source or choose a saved video from **Photos / Gallery** or **Files**. You can also open a keyword search on either platform. YouTube Studio can save your uploads as MP4s. TikTok offers **Share → Save video** when the creator enables it. [YouTube upload downloads](https://support.google.com/youtube/answer/56100) · [TikTok video downloads](https://support.tiktok.com/en/using-tiktok/exploring-videos/video-downloads)
+
+The file importer supports MP4, MOV, WebM and other supported containers with an audio track. The original file stays intact. Move, trim, layer or export the extracted audio like any other clip.
+
 ## Run
 
 Use Flutter 3.47.9, an Android SDK for Android, or a Mac with Xcode for iPhone. From this directory run the following commands with a connected device or simulator.
@@ -55,6 +63,7 @@ python -B -m unittest discover -s tools -p 'test_*.py'
 - `lib/audio.dart` generates the original demo and renders the arrangement in bounded blocks on a background isolate. It preserves stereo, applies trim and level, and applies low/high tone shaping to voice clips. A channel-linked soft knee handles peaks above 0.90 full scale. An hour of stereo PCM at the project rate takes about 635 MB before temporary renders and exports.
 - `lib/main.dart`, `lib/studio_view.dart` and `lib/clip_editor.dart` implement the phone editor. The waveform display derives from peak measurements of each source.
 - Tests cover stereo carrier separation, frame placement, overlapping clips across render blocks, mute and gain, voice filtering, timeline gestures, trim validation, export selection and export file handling. Check actual playback/record alignment on each target phone and headphone route before tuning latency compensation.
+- The mobile integration suite also checks landscape and portrait H.264/AAC MP4s, stereo conversion, clip timing, session persistence and silent-video rejection. To exercise live provider lookup and playback, run `flutter test integration_test/discovery_live_test.dart -d DEVICE_ID`. It downloads the credited Commons copies of [a YouTube bird recording](https://commons.wikimedia.org/wiki/File:2023-08-18_ZOO_LJUBLJANA_-_birds_5.webm) and [a TikTok animation](https://commons.wikimedia.org/wiki/File:Wikipe-tan_-_Wow!_Amazing!.webm).
 
 ## Later milestone — optional arrangement suggestions
 

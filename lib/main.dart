@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:share_plus/share_plus.dart';
 
 import 'clip_editor.dart';
+import 'discover_page.dart';
 import 'audio_codecs.dart';
 import 'export_sheet.dart';
 import 'model.dart';
@@ -247,13 +249,15 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
   void _addLayer() => _run('Adding a layer', () async {
         await engine.pause();
         if (!mounted) return;
-        final type = await showModalBottomSheet<LayerType>(
+        final type = await showModalBottomSheet<Object>(
             context: context,
+            isScrollControlled: true,
             builder: (ctx) => SafeArea(
-                    child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
+                    child: SingleChildScrollView(
+                        child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                       const Padding(
                           padding:
                               EdgeInsets.symmetric(horizontal: 20, vertical: 6),
@@ -272,11 +276,61 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                                 : t.label),
                             trailing: const Icon(Icons.chevron_right, size: 18),
                             onTap: () => Navigator.pop(ctx, t)),
+                      const Divider(),
+                      ListTile(
+                          leading: const Icon(Icons.travel_explore_rounded,
+                              color: mint),
+                          title: const Text('Discover media'),
+                          subtitle: const Text(
+                              'Search online or import a saved video'),
+                          onTap: () => Navigator.pop(ctx, 'discover')),
                       const SizedBox(height: 12),
-                    ])));
-        if (type == null) return;
-        if (await engine.importClip(type)) selected = engine.mix.clips.last.id;
+                    ]))));
+        if (type == 'discover') {
+          await _openDiscover();
+        } else if (type is LayerType && await engine.importClip(type)) {
+          selected = engine.mix.clips.last.id;
+        }
       });
+
+  Future<void> _openDiscover() async {
+    await engine.pause();
+    if (!mounted) return;
+    final at = engine.cursor;
+    final added = await Navigator.push<Clip>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => DiscoverPage(
+                at: at, cache: engine.cache, importMedia: engine.importMedia)));
+    if (added != null) {
+      selected = added.id;
+      _message(
+          'Added ${added.name} at ${timeOf(added.start, fraction: true)}.');
+    }
+  }
+
+  Future<void> _credit(Clip c) async {
+    final credit = c.credit;
+    if (credit == null) return;
+    await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text('Source credit'),
+                content: SingleChildScrollView(child: SelectableText(credit)),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Close')),
+                  FilledButton.icon(
+                      icon: const Icon(Icons.copy, size: 15),
+                      label: const Text('Copy credit'),
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: credit));
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        _message('Source credit copied.');
+                      })
+                ]));
+  }
 
   void _edit(Clip selectedClip) => _run('Editing clip', () async {
         if (!mounted) return;
@@ -418,6 +472,11 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
                   icon: const Icon(Icons.tune_rounded, size: 16),
                   label: const Text('Edit clip'))),
         ]),
+        if (c.credit?.isNotEmpty == true)
+          TextButton.icon(
+              onPressed: () => _credit(c),
+              icon: const Icon(Icons.info_outline, size: 16),
+              label: const Text('Source credit')),
       ]));
 
   Widget _transport() {
@@ -507,13 +566,22 @@ class _StudioPageState extends State<StudioPage> with WidgetsBindingObserver {
             title: const Row(children: [
               Icon(Icons.graphic_eq_rounded, color: mint, size: 24),
               SizedBox(width: 7),
-              Text('Innerwave',
-                  style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -.6,
-                      fontSize: 21))
+              Flexible(
+                  child: Text('Innerwave',
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -.6,
+                          fontSize: 21)))
             ]),
             actions: [
+              IconButton(
+                  tooltip: 'Discover media',
+                  icon: const Icon(Icons.travel_explore_rounded),
+                  onPressed: ready && editable
+                      ? () => _run('Discovering media', _openDiscover)
+                      : null),
               IconButton(
                   tooltip: 'Your sessions',
                   onPressed: ready && editable ? _library : null,

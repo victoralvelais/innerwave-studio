@@ -31,12 +31,14 @@ class Clip {
     this.muted = false,
     this.warmth = 0,
     this.presence = 0,
+    this.credit,
   });
 
   final String id;
   final String source;
   final int frames;
   final List<double> peaks;
+  final String? credit;
   String name;
   LayerType type;
   int start;
@@ -62,6 +64,7 @@ class Clip {
         'muted': muted,
         'warmth': warmth,
         'presence': presence,
+        if (credit != null) 'credit': credit,
       };
 
   factory Clip.fromJson(Map<String, dynamic> map) => Clip(
@@ -79,6 +82,7 @@ class Clip {
         muted: map['muted'],
         warmth: (map['warmth'] as num).toDouble(),
         presence: (map['presence'] as num).toDouble(),
+        credit: map['credit'] as String?,
       );
 }
 

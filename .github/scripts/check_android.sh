@@ -38,4 +38,4 @@ timeout 90 bash -c 'until adb -s emulator-5554 shell uiautomator dump /sdcard/st
 adb -s "$serial" uninstall "$package"
 flutter build apk --debug --target-platform android-x64
 adb -s "$serial" install -g build/app/outputs/flutter-apk/app-debug.apk
-flutter test integration_test/overdub_test.dart -d "$serial"
+flutter test "--dart-define=TEST_LIVE_SOURCES=${TEST_LIVE_SOURCES:-false}" integration_test/overdub_test.dart -d "$serial"

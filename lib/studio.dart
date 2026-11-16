@@ -211,14 +211,16 @@ class Studio {
     if (playing) await preview.play(assets, mix, cursor);
   }
 
-  Future<Clip> _import(
-      String path, String name, LayerType type, int start) async {
+  Future<Clip> _import(String path, String name, LayerType type, int start,
+      {String? credit, bool Function()? cancelled}) async {
     final id = makeId();
     final source = '$id.pcm';
     final out = File('$assets/$source');
     try {
       final frames = await decodeToPcm(File(path), out);
+      if (cancelled?.call() == true) throw StateError('Import cancelled.');
       final peaks = await compute(_peaks, (out.path, frames));
+      if (cancelled?.call() == true) throw StateError('Import cancelled.');
       return Clip(
           id: id,
           source: source,
@@ -227,9 +229,37 @@ class Studio {
           frames: frames,
           peaks: peaks,
           length: frames,
+          credit: credit,
           start: start);
     } catch (_) {
       if (await out.exists()) await out.delete();
+      rethrow;
+    }
+  }
+
+  Future<Clip> importMedia(File media, String name, LayerType type, int at,
+      {String? credit,
+      bool Function()? cancelled,
+      void Function()? onCommit}) async {
+    if (at < 0) throw ArgumentError.value(at, 'at');
+    if (recording) throw StateError('Finish the voice take before importing.');
+    final session = mix;
+    final clip = await _import(media.path, name, type, at,
+        credit: credit, cancelled: cancelled);
+    final source = File('$assets/${clip.source}');
+    if (cancelled?.call() == true || !identical(mix, session)) {
+      await source.delete();
+      throw StateError('Import cancelled.');
+    }
+    onCommit?.call();
+    mix.clips.add(clip);
+    try {
+      await save();
+      return clip;
+    } catch (_) {
+      mix.clips.remove(clip);
+      preview.revise(mix);
+      await source.delete();
       rethrow;
     }
   }
@@ -255,8 +285,7 @@ class Studio {
       throw const FormatException(
           'Download this audio file to your device and try again.');
     final name = file.name.replaceFirst(RegExp(r'\.[^.]+$'), '');
-    mix.clips.add(await _import(file.path!, name, type, cursor));
-    await save();
+    await importMedia(File(file.path!), name, type, cursor);
     return true;
   }
 
